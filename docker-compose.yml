@@ -18,6 +18,8 @@ services:
       - .:/lab                          # the whole repo, so the forge can commit the tools it builds
     environment:
       - TZ=${TZ:-UTC}                 # set TZ= in the root .env for local time in logs
+    ports:
+      - "127.0.0.1:${CONSOLE_PORT:-8792}:8792"   # the owner's console, this PC only; CONSOLE_PORT in the root .env for a second checkout
     working_dir: /bots
     restart: unless-stopped
     networks:

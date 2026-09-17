@@ -81,6 +81,8 @@
   .people li.picked { border-color:var(--phos); background:#0a2214; }
   .people img { width:28px; height:28px; border-radius:50%; background:#0a1a10; }
   .people small { color:var(--muted); }
+  tr.need td { background:rgba(255,179,71,.07); border-top:1px solid var(--amber); border-bottom:1px solid var(--amber); }
+  .tag.amber { color:var(--amber); border-color:var(--amber); }
   table.vault { width:100%; border-collapse:collapse; font-size:15px; margin-top:6px; }
   table.vault th { text-align:left; color:var(--muted); font-weight:normal; text-transform:uppercase; letter-spacing:1px; font-size:13px; padding:4px 8px; border-bottom:1px solid var(--line); }
   table.vault td { padding:7px 8px; border-bottom:1px solid var(--line); vertical-align:top; }
@@ -245,7 +247,21 @@
   <div class="problems" id="problems"></div>
   </form>
 
+  <section id="login" data-step="LOCKED" style="display:none">
+    <h2>Unlock the console</h2>
+    <p class="help">This page is only reachable on the PC that runs the bot. It opens with the <b>vault passphrase</b> chosen at setup
+      (the four words). Nothing here is sent anywhere.</p>
+    <div id="needbanner" class="help" style="display:none; border:1px solid var(--amber); border-radius:4px; padding:10px 12px; color:var(--amber)"></div>
+    <label for="loginpass">Vault passphrase</label>
+    <div class="row"><input id="loginpass" type="password" autocomplete="current-password" placeholder="amber-cedar-…"><button type="button" onclick="reveal('loginpass')">show</button><button type="button" class="primary" style="font-size:18px; padding:10px 18px" onclick="doLogin()">unlock</button></div>
+    <div class="status" id="s-login"></div>
+  </section>
+
   <section id="console" data-step="CONSOLE" style="display:none">
+    <div id="needbox" style="display:none; border:1px solid var(--amber); border-radius:4px; padding:10px 14px; margin-bottom:12px; background:#0b0a04">
+      <div style="color:var(--amber); font:22px var(--display); letter-spacing:1px">THE BOT NEEDS THESE TO CONTINUE</div>
+      <div id="needlist" class="help" style="margin:4px 0 0; color:var(--amber)"></div>
+    </div>
     <h2>Vault</h2>
     <p class="help">Every key the bot uses, in one encrypted file on this PC (<code id="vault-path"></code>). Values are never shown unless
       you ask and type the passphrase. A change to the Discord token needs a restart, which happens when you finish here;
@@ -350,7 +366,10 @@ function soundOff(seconds) {
 }
 document.addEventListener("pointerdown", soundStart, { once: false });
 document.addEventListener("keydown", (e) => { soundStart(); if (e.target.matches("input, select, textarea") && (e.key.length === 1 || e.key === "Backspace" || e.key === "Enter")) keyClick(); });
-const api = (path, body) => fetch(path, { method: body ? "POST" : "GET", headers: { "content-type": "application/json", "X-Setup-Key": KEY }, body: body ? JSON.stringify(body) : undefined }).then(r => r.json());
+const api = (path, body) => fetch(path, { method: body ? "POST" : "GET", headers: { "content-type": "application/json", "X-Setup-Key": KEY }, body: body ? JSON.stringify(body) : undefined, credentials: "same-origin" })
+  .then(async r => { const j = await r.json().catch(() => ({ error: `HTTP ${r.status}` })); if (r.status === 401 && j.login) { showLogin(); throw new Error("login required"); } return j; });
+// the keys the bot asked for, from its link: ?need=XAI_API_KEY,OTHER
+const NEED = (new URLSearchParams(location.search).get("need") || "").split(",").map(s => s.trim().toUpperCase()).filter(s => /^[A-Z][A-Z0-9_]{1,63}$/.test(s));
 const debounce = (fn, ms) => { let t; return (...a) => { clearTimeout(t); t = setTimeout(() => fn(...a), ms); }; };
 let state = { kits: {}, discord: null, voices: [], checks: {} };
 function reveal(id) { const i = $(id); i.type = i.type === "password" ? "text" : "password"; }
@@ -380,7 +399,8 @@ async function boot() {
   const add = (html, delay) => new Promise(r => setTimeout(() => { const li = document.createElement("li"); li.innerHTML = html; ul.appendChild(li); r(li); }, delay));
   await add("<b>homi</b> setup console · local only · nothing leaves this PC except key checks", 100);
   const li = await add("scanning for an existing configuration<span class='cursor'></span>", 500);
-  state = { ...state, ...(await api("/api/state")) };
+  try { state = { ...state, ...(await api("/api/state")) }; }
+  catch { li.innerHTML = "<span class='warn'>[!!]</span> console locked — unlock with the vault passphrase"; return; }   // persistent console: login first
   li.innerHTML = state.config_exists
     ? "<span class='warn'>[!!]</span> a configuration exists on this PC — saving needs an explicit tick at the bottom; abort to leave it alone"
     : "<span class='ok'>[OK]</span> fresh install — no configuration yet";
@@ -416,27 +436,60 @@ function suggestPass() { $("passphrase").value = state.suggested_passphrase || "
 
 // ---------------------------------------------------------------- the console: an existing install's keys and settings
 let vaultData = { secrets: [], needs_restart: [] };
+function showLogin() {
+  $("form").classList.add("hide"); $("console").style.display = "none"; $("login").style.display = "block";
+  if (NEED.length) { $("needbanner").style.display = "block"; $("needbanner").textContent = `The bot asked for: ${NEED.join(", ")}. Unlock, and those fields are ready at the top.`; }
+  setTimeout(() => $("loginpass").focus(), 50);
+}
+async function doLogin() {
+  status("login", "muted busy", "checking");
+  const r = await fetch("/api/login", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ passphrase: $("loginpass").value }), credentials: "same-origin" }).then(x => x.json()).catch(() => ({ error: "no answer" }));
+  if (!r.ok) { status("login", "bad", r.error || "wrong passphrase"); $("loginpass").className = "bad"; setTimeout(() => $("loginpass").className = "", 400); return; }
+  status("login", "ok", "unlocked"); $("loginpass").value = "";
+  $("login").style.display = "none";
+  try { state = { ...state, ...(await api("/api/state")) }; } catch {}
+  startConsole();
+}
+$("loginpass")?.addEventListener("keydown", (e) => { if (e.key === "Enter") doLogin(); });
 async function startConsole() {
   $("form").classList.add("hide"); $("console").style.display = "block";
   const logo = document.querySelector("pre.logo");
   if (logo) logo.textContent = logo.textContent.replace("household bot · setup console", "household bot · keys & settings console");
   const ul = $("boot"); const li = document.createElement("li"); li.innerHTML = "<span class='ok'>[OK]</span> console mode — edits apply to the bot on this PC"; ul.appendChild(li);
+  if (state.restart_needed) needRestart(state.restart_needed);
   await loadVault(); await loadSettings();
+}
+function paintNeed(secrets) {
+  const filled = NEED.filter(n => secrets.some(s => s.name === n && !s.pending));
+  const open = NEED.filter(n => !filled.includes(n));
+  if (!NEED.length) { $("needbox").style.display = "none"; return; }
+  $("needbox").style.display = "block";
+  $("needlist").innerHTML = open.length
+    ? `Still needed: <b>${open.map(esc).join("</b>, <b>")}</b> — paste each value in its highlighted row and press save.${filled.length ? ` Done: ${filled.map(esc).join(", ")}.` : ""}`
+    : `<span class="ok">[OK]</span> all set: ${filled.map(esc).join(", ")}. Go back to Discord and tell the bot to <b>try again</b>.`;
 }
 async function loadVault() {
   const r = await api("/api/vault");
   if (r.error) { status("vault", "bad", r.error); return; }
   vaultData = r; $("vault-path").textContent = r.path;
   const tb = $("vtable").querySelector("tbody"); tb.innerHTML = "";
-  const order = (s) => (r.bootstrap.indexOf(s.name) + 1 || 99);
-  for (const s of [...r.secrets].sort((a, b) => order(a) - order(b) || a.name.localeCompare(b.name))) {
+  const secrets = [...r.secrets];
+  for (const n of NEED) if (!secrets.some(s => s.name === n)) secrets.push({ name: n, note: "the bot asked for this", pending: true, length: 0, updated: "", ghost: true });
+  const order = (s) => (NEED.includes(s.name) ? -100 + NEED.indexOf(s.name) : 0) + (s.pending ? -50 : 0) + (r.bootstrap.indexOf(s.name) + 1 || 99);
+  let firstNeed = null;
+  for (const s of secrets.sort((a, b) => order(a) - order(b) || a.name.localeCompare(b.name))) {
     const tr = document.createElement("tr");
-    tr.innerHTML = `<td class="n">${esc(s.name)}${s.needs_restart ? '<span class="tag">restart</span>' : ""}</td><td>${esc(s.note || "")}<div class="muted" style="font-size:12.5px">${s.length} chars</div></td><td class="muted">${esc((s.updated || "").slice(0, 16))}</td>
-      <td class="acts"><button type="button" onclick="revealSecret('${esc(s.name)}', this)">reveal</button><button type="button" onclick="changeSecret('${esc(s.name)}', this)">change</button><button type="button" onclick="deleteSecret('${esc(s.name)}')">delete</button></td>`;
+    const need = NEED.includes(s.name) || s.pending;
+    if (need) tr.className = "need";
+    tr.innerHTML = `<td class="n">${esc(s.name)}${s.needs_restart ? '<span class="tag">restart</span>' : ""}${s.pending ? '<span class="tag amber">waiting for a value</span>' : ""}</td><td>${esc(s.note || "")}<div class="muted" style="font-size:12.5px">${s.pending ? "empty" : s.length + " chars"}</div></td><td class="muted">${esc((s.updated || "").slice(0, 16))}</td>
+      <td class="acts">${s.pending ? "" : `<button type="button" onclick="revealSecret('${esc(s.name)}', this)">reveal</button>`}<button type="button" onclick="changeSecret('${esc(s.name)}', this)">${s.pending ? "add value" : "change"}</button>${s.ghost ? "" : `<button type="button" onclick="deleteSecret('${esc(s.name)}')">delete</button>`}</td>`;
     tb.appendChild(tr);
+    if (need && !firstNeed && s.pending) firstNeed = tr;
   }
+  paintNeed(r.secrets);
+  if (firstNeed) { const btn = firstNeed.querySelector(".acts button:last-of-type"); if (btn && btn.textContent === "add value") btn.click(); }   // the first needed field opens itself
   status("vault", r.secrets.length ? "ok" : "muted", r.secrets.length ? `${r.secrets.length} secrets, vault v${r.version}` : "the vault is empty");
-  const missing = ["DISCORD_TOKEN", "ANTHROPIC_API_KEY"].filter(n => !r.secrets.some(s => s.name === n));
+  const missing = ["DISCORD_TOKEN", "ANTHROPIC_API_KEY"].filter(n => !r.secrets.some(s => s.name === n && !s.pending));
   if (missing.length) status("vault", "warn", `missing: ${missing.join(", ")} — the bot cannot run without these; add them below`);
 }
 function rowAfter(btn, html) {
@@ -491,8 +544,14 @@ async function saveSettings() {
   status("settings", "ok", r.changed.length ? `saved: ${r.changed.map(c => c.split(":")[1]).join(", ")} — applied on finish` : "nothing changed");
   if (r.changed.length) { needRestart(); await loadSettings(); }
 }
-function needRestart() { $("s-restart").className = "status warn"; $("s-restart").textContent = "a change needs the containers restarted — Finish does that"; }
-function exportVault() { window.location.href = "/api/vault/export?key=" + encodeURIComponent(KEY); status("backup", "ok", "downloading the encrypted vault file"); }
+function needRestart(what) {
+  $("s-restart").className = "status warn";
+  $("s-restart").innerHTML = state.persistent
+    ? `a change needs the containers restarted${what ? " (" + esc(what) + ")" : ""}. On this PC run <code>console.ps1 -Apply</code> (or <code>./console.sh --apply</code>), then <a href="#" onclick="restartDone(); return false">mark it done</a>.`
+    : "a change needs the containers restarted — Finish does that";
+}
+async function restartDone() { await api("/api/restart-done", {}); $("s-restart").className = "status muted"; $("s-restart").textContent = ""; }
+function exportVault() { window.location.href = state.persistent ? "/api/vault/export" : "/api/vault/export?key=" + encodeURIComponent(KEY); status("backup", "ok", "downloading the encrypted vault file"); }
 async function importVault() {
   const f = $("import-file").files[0]; if (!f) return status("backup", "bad", "pick the vault file first");
   const content = await new Promise((res, rej) => { const rd = new FileReader(); rd.onload = () => res(rd.result); rd.onerror = rej; rd.readAsDataURL(f); });
@@ -502,8 +561,13 @@ async function importVault() {
 }
 async function finishConsole() {
   const restart = $("s-restart").textContent !== "";
+  const r = await api("/api/done", {});
+  if (state.persistent) {
+    if (restart) { fetch("/api/logout", { method: "POST", credentials: "same-origin" }); crtOff("console locked · a restart is still needed: console.ps1 -Apply on this PC · you can close this tab"); }
+    else { fetch("/api/logout", { method: "POST", credentials: "same-origin" }); crtOff("console locked · changes applied live · you can close this tab"); }
+    return;
+  }
   crtOff(restart ? "console closed · restarting the bot with the changes · you can close this tab" : "console closed · changes applied live · you can close this tab");
-  await api("/api/done", {});
 }
 function checkTz() { state.checks.tz = /^[A-Za-z_]+(\/[A-Za-z0-9_+-]+)*$/.test($("tz").value.trim()); $("tz").className = state.checks.tz ? "ok" : "bad"; meter(); }
 

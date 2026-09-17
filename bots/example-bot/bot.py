@@ -68,6 +68,8 @@ PKG_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._+-]{0,63}$")   # one package name,
 # The forge (dev/forge.py): Claude Code on the dev box builds and tests a tool from a brief, then installs it here.
 FORGE_URL = os.environ.get("FORGE_URL", "http://bot-dev:8791").rstrip("/")
 FORGE_TIMEOUT = int(os.environ.get("FORGE_TIMEOUT", "480"))     # the forge's own limit for one build is 360s
+# The owner's console (served by the dev box on the owner's PC): where the bot sends people to add a key it needs.
+CONSOLE_URL = os.environ.get("CONSOLE_URL", "http://127.0.0.1:8792/console").rstrip("/")
 FORGE_ON = bool(FORGE_URL and os.environ.get("INTERNAL_TOKEN"))
 BOT_NAME = os.environ.get("BOT_NAME", "example-bot")
 KIT = os.environ.get("KIT", "default")       # which bots/<bot>/kits/<KIT> folder compose mounted at /data/tools; the forge installs there
@@ -104,11 +106,33 @@ def secret_env(names):
         vault = {}
     out = {}
     for n in names:
-        if n in vault:
+        if vault.get(n, {}).get("value"):                   # an empty entry is a placeholder waiting for the owner, not a value
             out[n] = vault[n]["value"]
-        elif n in os.environ:
+        elif os.environ.get(n):
             out[n] = os.environ[n]
     return out
+
+
+KEY_REJECTED_RE = re.compile(r"\b401\b|\b403\b|unauthori[sz]ed|invalid[ _-]*(api[ _-]*)?(key|token)|(key|token)[^.\n]{0,20}(invalid|expired|revoked|rejected)|authentication|incorrect api key", re.I)
+
+
+def key_needed(names, why, tool=None):
+    """The one way the bot ever asks for a key: it creates a highlighted placeholder for each name in the vault and points
+    the person at the console, which opens with those rows on top and empty fields ready. Never a request to paste a key
+    into chat. Returns the text to relay."""
+    names = [n for n in dict.fromkeys(names) if n and SECRET_NAME_RE.match(n)]
+    created = []
+    for n in names:
+        try:
+            if VAULT.placeholder(n, f"needed by {tool or 'the bot'}: {why}"[:200]):
+                created.append(n)
+        except (VaultError, ValueError):
+            pass                                              # unreadable vault: the link still tells the owner what is missing
+    link = f"{CONSOLE_URL}?need={','.join(names)}"
+    what = ", ".join(f"`{n}`" for n in names)
+    return (f"I need {what} for that ({why}). Add it here on the PC that runs me: {link}\n"
+            f"The {'field is' if len(names) == 1 else 'fields are'} already waiting there, highlighted at the top; paste the value, save, "
+            f"then tell me to try again.")
 
 
 def secrets_tool(action="list", name=None, value=None, note=None):
@@ -118,11 +142,16 @@ def secrets_tool(action="list", name=None, value=None, note=None):
             vault = vault_load()
         except ToolError as e:
             return {"error": str(e), "secrets": []}
+        pending = [n for n, d in vault.items() if not d.get("value")]
         return {"count": len(vault), "secrets": [{"name": n, "note": d.get("note", ""), "updated": d.get("updated"),
-                                                   "length": len(d.get("value", ""))} for n, d in sorted(vault.items())],
-                "note": "values are never shown; a tool that declares one of these names gets it as an environment variable"}
+                                                   "length": len(d.get("value", "")), "pending": not d.get("value")} for n, d in sorted(vault.items())],
+                "waiting_for_owner": pending, "console": f"{CONSOLE_URL}?need={','.join(pending)}" if pending else CONSOLE_URL,
+                "note": "values are never shown; a tool that declares one of these names gets it as an environment variable. "
+                        "'pending' entries are placeholders the owner has not filled yet"}
     if not name or not SECRET_NAME_RE.match(name):
         raise ToolError("name must look like an environment variable: XAI_API_KEY, NAS_PASSWORD, ...")
+    if action == "placeholder":
+        return {"ok": True, "name": name, "reply": key_needed([name], note or "a tool is going to need it")}
     if action == "set":
         if value is None or value == "":
             raise ToolError("set needs a value")
@@ -141,7 +170,7 @@ def secrets_tool(action="list", name=None, value=None, note=None):
         del vault[name]
         vault_save(vault)
         return {"ok": True, "deleted": name}
-    raise ToolError("action must be list, set or delete")
+    raise ToolError("action must be list, set, delete or placeholder")
 
 TOOL_GUIDE = f"""
 
@@ -175,13 +204,16 @@ Your machine - you are root in your own Debian container, and `shell` and `insta
 - You are on the household network and can reach the internet. Stay inside your own container unless
   asked; you have access to things outside it that you are not meant to touch on your own initiative.
 - Secrets (API keys, passwords) are handled for you: give create_tool a `secrets` list of environment-variable
-  names your tool needs (e.g. ["XAI_API_KEY"]) and read them with os.environ when it runs. Users store values
-  with the `secrets` tool (set) - ideally by DM - or the owner puts them in the bot's .env. Never write a
+  names your tool needs (e.g. ["XAI_API_KEY"]) and read them with os.environ when it runs. Never write a
   secret into code, never save one under /data, never echo one into a reply, and never ask for one you
   could declare instead. Already available to any tool that declares the name: DISCORD_TOKEN (this bot's own
   Discord token, for anything on the Discord API), ANTHROPIC_API_KEY and, when the house uses it, ELEVENLABS_API_KEY -
-  use those names, do not invent new ones or ask people for them. The owner adds and changes secrets from their PC
-  in the console; people should not paste keys into chat.
+  use those names, do not invent new ones.
+- When a key is missing or a service rejects one, you are handed a console link with the exact names
+  (`...?need=XAI_API_KEY`): a placeholder for each is already waiting there, highlighted. Relay that link and
+  those names word for word, say "add it there, then tell me to try again", and stop. Never ask anyone to paste a
+  key into chat or a DM, never mention .env files, never guess at a key. Before building a tool that will need a
+  key nobody has yet, create the slot yourself with `secrets` action placeholder and send the same link.
 When you make a tool or install something, say so in one short line.
 """
 FORGE_GUIDE = """
@@ -259,11 +291,13 @@ META_TOOLS = [
 ]
 META_TOOLS.append({
     "name": "secrets",
-    "description": "The bot's encrypted vault of API keys and passwords, by name. action 'list' shows names and notes only; "
-                   "'set' stores or replaces a value (name like XAI_API_KEY); 'delete' removes one. Values can never be read back "
-                   "here - a tool that declares the name in its spec receives it as an environment variable when it runs.",
+    "description": "The bot's encrypted vault of API keys and passwords, by name. action 'list' shows names, notes and which are "
+                   "still empty placeholders; 'placeholder' creates an empty, highlighted slot for a key the owner has to add and returns "
+                   "the console link to relay (use this whenever a key is needed - never ask for the value in chat); 'set' stores a value "
+                   "someone insisted on giving you; 'delete' removes one. Values can never be read back here - a tool that declares the "
+                   "name in its spec receives it as an environment variable when it runs.",
     "input_schema": {"type": "object", "properties": {
-        "action": {"type": "string", "enum": ["list", "set", "delete"]},
+        "action": {"type": "string", "enum": ["list", "placeholder", "set", "delete"]},
         "name": {"type": "string"}, "value": {"type": "string"}, "note": {"type": "string"}},
         "required": ["action"]},
 })
@@ -430,10 +464,16 @@ def run_tool(name, args, selftest=False):
     costs one subprocess instead of the bot."""
     if not code_path(name).exists():
         raise ToolError(f"you have no tool named {name}")
+    declared = tool_secrets(name)
+    have = secret_env(declared)
+    missing = [n for n in declared if not have.get(n)]
+    if missing and not selftest:                             # do not even start: the person gets the console link instead of a traceback
+        raise ToolError(key_needed(missing, f"the `{name}` tool declares it and it is not in the vault", tool=name)
+                        + "\nRelay that to the person as-is (link included) and stop; do not try other ways to get the key.")
     argv = [sys.executable, os.path.abspath(__file__), "--run-tool", name] + (["--selftest"] if selftest else [])
     try:
         p = subprocess.run(argv, input=json.dumps(args or {}), capture_output=True, text=True,
-                           timeout=TOOL_TIMEOUT, env={**os.environ, **secret_env(tool_secrets(name)), "PYTHONDONTWRITEBYTECODE": "1"})
+                           timeout=TOOL_TIMEOUT, env={**os.environ, **have, "PYTHONDONTWRITEBYTECODE": "1"})
     except subprocess.TimeoutExpired:
         raise ToolError(f"the tool ran longer than {TOOL_TIMEOUT}s and was stopped")
     try:
@@ -442,7 +482,11 @@ def run_tool(name, args, selftest=False):
         tail = (p.stderr or p.stdout or "").strip()[-600:]
         raise ToolError(f"the tool returned nothing usable (exit {p.returncode}): {tail}")
     if not out.get("ok"):
-        raise ToolError(out["error"])
+        err = str(out["error"])
+        if declared and KEY_REJECTED_RE.search(err):          # the key exists but the service refused it
+            err += ("\n\nThis looks like a rejected or expired key. If the call itself was right, the key needs replacing: "
+                    f"{CONSOLE_URL}?need={','.join(declared)} - relay that link to the person, do not ask them to paste a key here.")
+        raise ToolError(err)
     return out["result"]
 
 
@@ -1015,16 +1059,19 @@ def ask(history, trusted=True, system_extra="", ctx=None):
     messages = [dict(m) for m in history]
     notes = []
     for _ in range(MAX_STEPS):
-        response = get_client().beta.messages.create(
-            model=MODEL,
-            max_tokens=16000,
-            system=SYSTEM + TOOL_GUIDE + system_extra,
-            messages=messages,
-            tools=tool_specs(),
-            output_config={"effort": "medium"},
-            betas=["server-side-fallback-2026-07-01"],
-            fallbacks="default",
-        )
+        try:
+            response = get_client().beta.messages.create(
+                model=MODEL,
+                max_tokens=16000,
+                system=SYSTEM + TOOL_GUIDE + system_extra,
+                messages=messages,
+                tools=tool_specs(),
+                output_config={"effort": "medium"},
+                betas=["server-side-fallback-2026-07-01"],
+                fallbacks="default",
+            )
+        except anthropic.AuthenticationError:               # the brain's own key: no model to phrase it, so the bot says it itself
+            return key_needed(["ANTHROPIC_API_KEY"], "the model API rejected the key I have"), notes
         if response.stop_reason == "refusal":
             return "I can't help with that one.", notes
         if response.stop_reason != "tool_use":

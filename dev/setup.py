@@ -209,6 +209,8 @@ def write_files(cfg):
         "# the forge on the dev box builds tools the model can't write in one go; FORGE_URL= turns it off",
         "FORGE_URL=http://bot-dev:8791",
         "FORGE_TIMEOUT=480",
+        "# the owner's console on this PC (served by the dev box); the bot links people here when it needs a key added",
+        "CONSOLE_URL=http://127.0.0.1:8792/console",
         "# this household's tool kit: bots/example-bot/kits/<KIT> is mounted at /data/tools (same name in the root .env for compose)",
         f"KIT={kit}",
         "# daily review: the bot proposes 1-3 new tools in chat at this local time; empty = off. IDEAS_CHANNEL: name or id, empty = busiest",

@@ -26,14 +26,72 @@ PORT = int(os.environ.get("SETUP_PORT", "8792"))
 KEY = os.environ.get("SETUP_KEY") or secrets.token_urlsafe(16)
 SKIP_CHECKS = os.environ.get("SETUP_SKIP_CHECKS") == "1"
 MODE = "console" if os.environ.get("SETUP_MODE") == "console" or "--console" in sys.argv else "setup"   # console: edit keys and settings of an existing install
+# PERSISTENT: the console the dev box serves all the time (forge.py starts it). No one-time key then; the page asks for the
+# vault passphrase and gets a session cookie. The bot's "add this key" links point here.
+PERSISTENT = os.environ.get("SETUP_PERSISTENT") == "1"
 PAGE = (Path(__file__).parent / "setup.html").read_text(encoding="utf-8")
 DISCORD = "https://discord.com/api/v10"
 MSG_CONTENT_FLAGS = (1 << 18) | (1 << 19)        # GATEWAY_MESSAGE_CONTENT, GATEWAY_MESSAGE_CONTENT_LIMITED
 DONE = asyncio.Event()
+SESSIONS = {}                                    # cookie token -> expiry (persistent console logins)
+SESSION_TTL = 12 * 3600
+LOGIN_FAILS = {}                                 # remote ip -> [timestamps] for the 5-a-minute limit
+COOKIE = "homi_console"
+
+
+def session_ok(req):
+    tok = req.cookies.get(COOKIE)
+    exp = SESSIONS.get(tok)
+    if not tok or not exp:
+        return False
+    if exp < time.time():
+        SESSIONS.pop(tok, None)
+        return False
+    SESSIONS[tok] = time.time() + SESSION_TTL   # sliding
+    return True
 
 
 def authorized(req):
-    return req.query.get("key") == KEY or req.headers.get("X-Setup-Key") == KEY
+    if not PERSISTENT and (req.query.get("key") == KEY or req.headers.get("X-Setup-Key") == KEY):
+        return True
+    return session_ok(req)
+
+
+def console_passphrase_ok(passphrase):
+    """The console login: the vault passphrase (or, on an install still on a random VAULT_KEY, that key)."""
+    env = cfgfile.env_values(cfgfile.BOT_ENV)
+    if not env:
+        return False
+    if env.get("VAULT_PASSPHRASE"):
+        return secrets.compare_digest(passphrase, env["VAULT_PASSPHRASE"])
+    return bool(env.get("VAULT_KEY")) and secrets.compare_digest(passphrase, env["VAULT_KEY"])
+
+
+async def login(req):
+    ip = req.remote or "?"
+    now = time.time()
+    LOGIN_FAILS[ip] = [t for t in LOGIN_FAILS.get(ip, []) if now - t < 60]
+    if len(LOGIN_FAILS[ip]) >= 5:
+        return web.json_response({"ok": False, "error": "too many tries; wait a minute"}, status=429)
+    try:
+        body = await req.json()
+    except Exception:  # noqa
+        body = {}
+    if not console_passphrase_ok(cfgfile.clean(str(body.get("passphrase") or ""))):
+        LOGIN_FAILS[ip].append(now)
+        return web.json_response({"ok": False, "error": "wrong passphrase"}, status=401)
+    tok = secrets.token_urlsafe(32)
+    SESSIONS[tok] = now + SESSION_TTL
+    resp = web.json_response({"ok": True})
+    resp.set_cookie(COOKIE, tok, httponly=True, samesite="Strict", path="/", max_age=SESSION_TTL)
+    return resp
+
+
+async def logout(req):
+    SESSIONS.pop(req.cookies.get(COOKIE), None)
+    resp = web.json_response({"ok": True})
+    resp.del_cookie(COOKIE, path="/")
+    return resp
 
 
 async def fetch_json(session, method, url, **kw):
@@ -124,6 +182,8 @@ async def check_eleven(key):
 def guarded(handler):
     async def inner(req):
         if not authorized(req):
+            if PERSISTENT:
+                return web.json_response({"error": "login required", "login": True}, status=401)
             return web.json_response({"error": "bad or missing setup key - use the link the installer printed"}, status=403)
         try:
             return await handler(req)
@@ -134,8 +194,13 @@ def guarded(handler):
     return inner
 
 
-@guarded
 async def page(req):
+    """The page itself is public on the persistent console (it is only reachable on the owner's PC) and carries no key there;
+    every API call behind it needs the session. The one-time setup keeps the key in the page."""
+    if PERSISTENT:
+        return web.Response(text=PAGE.replace("__KEY__", "persistent"), content_type="text/html")
+    if not authorized(req):
+        return web.json_response({"error": "bad or missing setup key - use the link the installer printed"}, status=403)
     return web.Response(text=PAGE.replace("__KEY__", KEY), content_type="text/html")
 
 
@@ -150,8 +215,9 @@ async def state(req):
             vault_info["count"] = len(v.names()); vault_info["readable"] = True
         except Exception as e:  # noqa
             vault_info["readable"] = False; vault_info["error"] = str(e)
-    return web.json_response({"mode": MODE, "kits": cfgfile.existing_kits(), "config_exists": cfgfile.config_exists(),
-                              "skip_checks": SKIP_CHECKS, "vault": vault_info, "suggested_passphrase": vaultlib.suggest_passphrase()})
+    return web.json_response({"mode": MODE, "persistent": PERSISTENT, "kits": cfgfile.existing_kits(), "config_exists": cfgfile.config_exists(),
+                              "skip_checks": SKIP_CHECKS, "vault": vault_info, "suggested_passphrase": vaultlib.suggest_passphrase(),
+                              "restart_needed": cfgfile.RESTART_MARKER.read_text(encoding="utf-8").strip() if cfgfile.RESTART_MARKER.exists() else ""})
 
 
 def _vault_or_400():
@@ -346,15 +412,27 @@ async def write(req):
 
 @guarded
 async def cancel(req):
-    asyncio.get_running_loop().call_later(0.5, DONE.set)
+    """Setup/one-off console: finish or abort ends the server so the installer continues. The persistent console just stays."""
+    if not PERSISTENT:
+        asyncio.get_running_loop().call_later(0.5, DONE.set)
+    marker = cfgfile.RESTART_MARKER.read_text(encoding="utf-8").strip() if cfgfile.RESTART_MARKER.exists() else ""
+    return web.json_response({"ok": True, "restart_needed": marker})
+
+
+@guarded
+async def restart_ack(req):
+    """The owner ran `docker compose up -d` themselves: clear the marker."""
+    cfgfile.RESTART_MARKER.unlink(missing_ok=True)
     return web.json_response({"ok": True})
 
 
-async def main():
-    if not cfgfile.LAB.exists():
-        sys.exit("the repo has to be mounted at /lab - run this through install.sh or install.ps1")
+def build_app():
     app = web.Application(client_max_size=256 * 1024)
     app.router.add_get("/setup", page)
+    app.router.add_get("/console", page)
+    app.router.add_post("/api/login", login)
+    app.router.add_post("/api/logout", logout)
+    app.router.add_post("/api/restart-done", restart_ack)
     app.router.add_get("/api/state", state)
     app.router.add_post("/api/check/{what}", check)
     app.router.add_post("/api/write", write)
@@ -368,11 +446,30 @@ async def main():
     app.router.add_post("/api/vault/import", vault_import)
     app.router.add_get("/api/settings", settings_get)
     app.router.add_post("/api/settings", settings_set)
-    app.router.add_get("/health", lambda r: web.json_response({"ok": True}))
+    app.router.add_get("/health", lambda r: web.json_response({"ok": True, "mode": MODE, "persistent": PERSISTENT}))
     assets = Path(__file__).parent / "assets"                # the console's sounds; small, and nothing secret in them
     if assets.is_dir():
         app.router.add_static("/assets/", assets, show_index=False)
-    runner = web.AppRunner(app)
+    return app
+
+
+async def serve_console(port=PORT):
+    """The always-on console, started by forge.py inside the dev container: console mode, persistent, passphrase login.
+    Compose publishes the port on 127.0.0.1 only, so it is reachable from the owner's PC and nowhere else."""
+    global MODE, PERSISTENT
+    MODE, PERSISTENT = "console", True
+    runner = web.AppRunner(build_app())
+    await runner.setup()
+    await web.TCPSite(runner, "0.0.0.0", port).start()
+    print(f"console listening on :{port} (published on the PC as http://127.0.0.1:{port}/console; vault passphrase to log in)", flush=True)
+    while True:
+        await asyncio.sleep(3600)
+
+
+async def main():
+    if not cfgfile.LAB.exists():
+        sys.exit("the repo has to be mounted at /lab - run this through install.sh or install.ps1")
+    runner = web.AppRunner(build_app())
     await runner.setup()
     await web.TCPSite(runner, "0.0.0.0", PORT).start()      # the installer publishes this port on 127.0.0.1 only
     print(f"SETUP_URL=http://localhost:{PORT}/setup?key={KEY}", flush=True)
