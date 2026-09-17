@@ -734,12 +734,12 @@ function powerDown(seconds) {
   const el = $("shutdown"); el.style.display = "block";
   const tick = () => {
     if (seconds <= 0) { crtOff(); return; }
-    el.innerHTML = `powering down in ${seconds}… <a href="#" onclick="keepScreen(); return false">keep this screen</a>`;
+    el.innerHTML = `powering down in ${seconds}… <a href="#" onclick="keepScreen(); return false">keep this screen</a> · <a href="#" onclick="closeTerminal(); return false">close terminal now</a>`;
     seconds--; offTimer = setTimeout(tick, 1000);
   };
   tick();
 }
-function keepScreen() { clearTimeout(offTimer); $("shutdown").textContent = "screen kept - close this tab whenever you like"; }
+function keepScreen() { clearTimeout(offTimer); $("shutdown").innerHTML = `screen kept · <a href="#" onclick="closeTerminal(); return false">close terminal</a> whenever you like`; }
 function crtOff(finalText) {
   soundOff(1.2);
   if (finalText) $("deadtext").textContent = finalText.replace(/\s*·\s*you can close this tab$/, "");
