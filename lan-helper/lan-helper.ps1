@@ -168,8 +168,13 @@ function Query-Mdns([string]$type, [int]$timeoutSec) {
 }
 function Query-Ssdp([string]$st, [int]$timeoutSec) {
   $msg = "M-SEARCH * HTTP/1.1`r`nHOST: 239.255.255.250:1900`r`nMAN: `"ssdp:discover`"`r`nMX: $([Math]::Max(1, [Math]::Min(5, $timeoutSec)))`r`nST: $st`r`n`r`n"
-  $u = New-LanUdp; $u.Client.ReceiveTimeout = 500
-  $b = [Text.Encoding]::ASCII.GetBytes($msg); $null = $u.Send($b, $b.Length, "239.255.255.250", 1900); Start-Sleep -Milliseconds 150; $null = $u.Send($b, $b.Length, "239.255.255.250", 1900)
+  $u = New-LanUdp; $u.Client.ReceiveTimeout = 500; $u.EnableBroadcast = $true
+  $u.Client.SetSocketOption([Net.Sockets.SocketOptionLevel]::IP, [Net.Sockets.SocketOptionName]::MulticastTimeToLive, 4)
+  $b = [Text.Encoding]::ASCII.GetBytes($msg)
+  # multicast twice plus the subnet broadcast: some TVs only answer one of them
+  $null = $u.Send($b, $b.Length, "239.255.255.250", 1900); Start-Sleep -Milliseconds 150; $null = $u.Send($b, $b.Length, "239.255.255.250", 1900)
+  $lanIp = Get-LanPrimary
+  if ($lanIp) { $ipb = [System.Net.IPAddress]::Parse($lanIp).GetAddressBytes(); $null = $u.Send($b, $b.Length, "$($ipb[0]).$($ipb[1]).$($ipb[2]).255", 1900) }
   $found = @{}; $deadline = (Get-Date).AddSeconds($timeoutSec)
   while ((Get-Date) -lt $deadline) {
     try {
