@@ -1,0 +1,22 @@
+{
+  "name": "lan",
+  "description": "The household network as seen from the PC itself, not from inside the container: use this for anything that needs real LAN presence. action 'arp' lists neighbours (ip, mac, state) - how to find a device's MAC; filter with ip or mac. 'wake' sends wake-on-LAN magic packets (give mac, or ip to look the MAC up). 'ping' one host. 'mdns' discovers services by type (service_type e.g. _googlecast._tcp.local, _airplay._tcp.local, _sonos._tcp.local, _hap._tcp.local, _printer._tcp.local; default lists all service types present) returning instance, host, ip, port, txt. 'ssdp' discovers UPnP devices (st e.g. ssdp:all, urn:schemas-upnp-org:device:MediaRenderer:1, roku:ecp, urn:dial-multiscreen-org:service:dial:1) returning ip, location, server. 'udp' sends a datagram (text or hex) to ip:port, optionally broadcast, and collects replies for wait_ms. Requires the lan-helper service on the Windows host; if unreachable, tell the owner to run lan-helper\\install-lan-helper.ps1 once as administrator. Direct unicast HTTP/TCP to a device you already know does not need this tool.",
+  "input_schema": {
+    "type": "object",
+    "properties": {
+      "action": {"type": "string", "enum": ["health", "arp", "wake", "ping", "mdns", "ssdp", "udp"]},
+      "mac": {"type": "string", "description": "for wake, or to filter arp"},
+      "ip": {"type": "string", "description": "for wake/ping/udp, or to filter arp"},
+      "service_type": {"type": "string", "description": "mdns: the DNS-SD service type, e.g. _googlecast._tcp.local"},
+      "st": {"type": "string", "description": "ssdp: search target, default ssdp:all"},
+      "port": {"type": "integer", "description": "udp: destination port"},
+      "text": {"type": "string", "description": "udp: payload as text"},
+      "hex": {"type": "string", "description": "udp: payload as hex bytes (instead of text)"},
+      "broadcast": {"type": "boolean", "description": "udp: allow a broadcast destination"},
+      "wait_ms": {"type": "integer", "description": "udp: collect replies for this long (max 5000)"},
+      "timeout": {"type": "integer", "description": "seconds to listen for mdns/ssdp answers (default 3, max 10) or ping timeout"}
+    },
+    "required": ["action"]
+  },
+  "secrets": ["INTERNAL_TOKEN"]
+}

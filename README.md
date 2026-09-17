@@ -191,6 +191,24 @@ A quiet day produces nothing. Owners control it in chat through the `settings` t
 take effect without a restart. `docker compose exec example-bot python bot.py --ideas --dry` runs the review now
 and prints it, notes included, instead of posting.
 
+### Real LAN presence: the lan-helper
+
+Docker Desktop on Windows runs containers inside a VM, so a tool in the bot's container cannot send a broadcast, join a
+multicast group, or be found by mDNS or SSDP. Wake-on-LAN, Chromecast, AirPlay and Sonos discovery, LG TV pairing and
+anything else that relies on those silently fail from behind that NAT, and neither macvlan nor host networking fixes it
+on Windows (they attach to the VM, not to your network card). `lan-helper/lan-helper.ps1` is a small PowerShell server
+that runs natively on the PC, where the real card is, and does those things for the containers: the neighbour table for
+MAC lookups, wake-on-LAN, ping, mDNS/DNS-SD and SSDP discovery, and raw UDP with replies. The `lan` starter tool talks
+to it at `host.docker.internal:8793` with the shared `INTERNAL_TOKEN`. Install once, as administrator, and it starts
+with Windows from then on:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\lan-helper\install-lan-helper.ps1     # add -Uninstall to remove
+```
+
+It opens port 8793 on private networks only, to PowerShell only, and every request needs the token. On a Linux host you
+do not need it: give the bot container macvlan or host networking instead.
+
 ### What it can reach
 
 The container runs as root, and Docker's network isolation is not a boundary against your LAN. From inside
