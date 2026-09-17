@@ -40,6 +40,20 @@ discovery through the host helper) from
 install becomes its household's bot rather than a copy of someone else's. Re-run the installer any time to
 reconfigure.
 
+## Uninstalling
+
+In the install folder:
+
+```bash
+./uninstall.sh            # Windows: powershell -ExecutionPolicy Bypass -File .\uninstall.ps1
+./uninstall.sh --purge    # also delete the .env files, the vault (data/) and the kit; asks you to type DELETE
+```
+
+It stops and removes the containers, network, volumes and images of this folder, and on Windows the LAN helper task
+and firewall rules if they were registered for this folder. Without `--purge` the configuration, vault and kit stay,
+so running the installer again brings the same bot back; with it, nothing of the household remains and the folder can
+be deleted.
+
 ## Updating
 
 In the install folder:
