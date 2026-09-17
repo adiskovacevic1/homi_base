@@ -44,5 +44,7 @@ Register-ScheduledTask -TaskName $TaskName -Action $action -Trigger $trigger -Se
 Start-ScheduledTask -TaskName $TaskName
 Start-Sleep -Seconds 3
 try { $h = Invoke-WebRequest -UseBasicParsing "http://127.0.0.1:$Port/health" -TimeoutSec 5; Write-Host "lan-helper is up: $($h.Content)" }
-catch { Write-Host "registered, but the helper did not answer yet on port $Port. Check: Get-ScheduledTask '$TaskName' | Get-ScheduledTaskInfo" }
+catch {
+  if (Test-Path (Join-Path (Split-Path -Parent $PSScriptRoot) "bots\example-bot\.env")) { Write-Host "registered, but the helper did not answer yet on port $Port. Check: Get-ScheduledTask '$TaskName' | Get-ScheduledTaskInfo" }
+  else { Write-Host "registered; it starts answering once setup has written bots\example-bot\.env (it holds the shared token)." } }
 Write-Host "Containers reach it at http://host.docker.internal:$Port with the INTERNAL_TOKEN from bots\example-bot\.env. It starts with Windows from now on."

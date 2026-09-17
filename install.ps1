@@ -10,6 +10,20 @@ if (-not (Get-Command docker -ErrorAction SilentlyContinue)) { Write-Host "Docke
 docker compose version *> $null; if (-not $?) { Write-Host "'docker compose' is not available; update Docker Desktop."; exit 1 }
 docker info *> $null; if (-not $?) { Write-Host "Docker Desktop is installed but not running. Start it, then re-run."; exit 1 }
 
+# The LAN helper first: it is what lets the bot see TVs, speakers and the rest of the house (containers cannot on Windows).
+# It needs one administrator approval; the rest of the install does not.
+if (Get-ScheduledTask -TaskName "homi lan-helper" -ErrorAction SilentlyContinue) {
+  Write-Host "LAN helper: already installed."
+} else {
+  Write-Host "LAN helper: installing (Windows will ask for administrator approval once)..."
+  try {
+    $p = Start-Process -PassThru -Wait -Verb RunAs powershell.exe -ArgumentList "-NoProfile -ExecutionPolicy Bypass -File `"$PSScriptRoot\lan-helper\install-lan-helper.ps1`""
+    if ($p.ExitCode -eq 0 -and (Get-ScheduledTask -TaskName "homi lan-helper" -ErrorAction SilentlyContinue)) { Write-Host "LAN helper: installed and running." }
+    else { Write-Host "LAN helper: not installed (exit $($p.ExitCode)). The bot works without it, just blind to the network; run lan-helper\install-lan-helper.ps1 as administrator later." -ForegroundColor Yellow }
+  } catch { Write-Host "LAN helper: skipped (approval declined). The bot works without it, just blind to the network; run lan-helper\install-lan-helper.ps1 as administrator later." -ForegroundColor Yellow }
+}
+Write-Host ""
+
 Write-Host "Building the three images (several minutes the first time; the voice image downloads a speech model)..."
 docker compose build; if (-not $?) { exit 1 }
 Write-Host ""
@@ -52,6 +66,3 @@ Write-Host "Watch the bot:   docker compose logs -f example-bot"
 Write-Host "Voice bot:       docker compose logs -f voice-bot"
 Write-Host "Keys & settings: .\console.ps1   (change any key or setting from this PC; the vault applies live)"
 Write-Host "Reconfigure:     .\install.ps1   (the whole setup again; the vault passphrase is kept)"
-Write-Host ""
-Write-Host "Optional, for wake-on-LAN and device discovery on your network (run once, as Administrator):"
-Write-Host "  powershell -ExecutionPolicy Bypass -File .\lan-helper\install-lan-helper.ps1"

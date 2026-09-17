@@ -159,6 +159,15 @@ async def check_owners(token, ids):
     return out
 
 
+async def check_openai_compat(key, base, label):
+    async with aiohttp.ClientSession(headers={"Authorization": f"Bearer {key}"}) as s:
+        st, body = await fetch_json(s, "GET", f"{base}/models")
+        if st == 200:
+            return {"ok": True}
+        msg = (body.get("error") or {}).get("message") if isinstance(body, dict) and isinstance(body.get("error"), dict) else ""
+        return {"ok": False, "error": f"{label} rejected this key" if st in (401, 403) else f"{label} answered {st}: {msg or ''}".strip()}
+
+
 async def check_anthropic(key):
     async with aiohttp.ClientSession(headers={"x-api-key": key, "anthropic-version": "2023-06-01"}) as s:
         st, body = await fetch_json(s, "GET", "https://api.anthropic.com/v1/models?limit=1")
@@ -390,7 +399,7 @@ async def check(req):
     if SKIP_CHECKS:
         fake = {"discord": {"ok": True, "name": "test-bot", "id": "0", "avatar": "", "app_id": "123456789012345678", "message_content": True,
                             "invite": cfgfile.invite_url("123456789012345678")},
-                "anthropic": {"ok": True}, "eleven": {"ok": True, "voices": []},
+                "anthropic": {"ok": True}, "openai": {"ok": True}, "deepseek": {"ok": True}, "eleven": {"ok": True, "voices": []},
                 "owners": [{"id": i, "ok": True, "name": "tester"} for i in body.get("ids", [])],
                 "guilds": {"ok": True, "guilds": [{"id": "1", "name": "Test Server", "icon": ""}]},
                 "members": {"ok": True, "members": [{"id": "111111111111111111", "name": "Tester", "username": "tester", "avatar": ""},
@@ -408,6 +417,10 @@ async def check(req):
         return web.json_response(await check_discord(cfgfile.clean(body.get("token"))))
     if what == "anthropic":
         return web.json_response(await check_anthropic(cfgfile.clean(body.get("key"))))
+    if what == "openai":
+        return web.json_response(await check_openai_compat(cfgfile.clean(body.get("key")), "https://api.openai.com/v1", "OpenAI"))
+    if what == "deepseek":
+        return web.json_response(await check_openai_compat(cfgfile.clean(body.get("key")), "https://api.deepseek.com/v1", "DeepSeek"))
     if what == "eleven":
         return web.json_response(await check_eleven(cfgfile.clean(body.get("key"))))
     if what == "owners":
@@ -419,7 +432,7 @@ async def check(req):
 @guarded
 async def write(req):
     body = await req.json()
-    cfg = {k: cfgfile.clean(str(body.get(k) or "")) for k in ("token", "anthropic", "owners", "name", "eleven", "voice", "auto", "kit", "app_id", "kit_remote", "tz", "passphrase")}
+    cfg = {k: cfgfile.clean(str(body.get(k) or "")) for k in ("token", "anthropic", "openai", "deepseek", "owners", "name", "eleven", "voice", "auto", "kit", "app_id", "kit_remote", "tz", "passphrase")}
     if not re.fullmatch(r"[A-Za-z_]+(/[A-Za-z0-9_+-]+)*", cfg["tz"] or ""):
         cfg["tz"] = "UTC"
     cfg["fresh_secrets"] = bool(body.get("fresh_secrets"))

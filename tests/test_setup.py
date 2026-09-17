@@ -81,6 +81,10 @@ def test_validation_rejects_bad_input(lab, config):
         lab.write_files(dict(config, token="short"))
     with pytest.raises(ValueError, match="sk-ant-"):
         lab.write_files(dict(config, anthropic="nope"))
+    with pytest.raises(ValueError, match="at least one model key"):
+        lab.write_files(dict(config, anthropic=""))
+    with pytest.raises(ValueError, match="OpenAI key"):
+        lab.write_files(dict(config, openai="nope"))
     with pytest.raises(ValueError, match="owner"):
         lab.write_files(dict(config, owners=""))
     with pytest.raises(ValueError, match="kit name"):
@@ -102,3 +106,25 @@ def test_update_env_keeps_comments_and_changes_only_what_it_should(lab, config):
     assert changed == ["IDEAS_AT"], "a value that is already right is not reported as changed"
     assert after.count("#") == before.count("#"), "comments survive"
     assert "IDEAS_AT=20:30" in after
+
+
+def test_any_one_model_key_is_enough_and_becomes_the_brain(lab, config):
+    import json
+    out = lab.write_files(dict(config, anthropic="", deepseek="sk-deepseek-test"))
+    v = lab.current_vault()
+    assert v.get("DEEPSEEK_API_KEY") == "sk-deepseek-test" and v.get("ANTHROPIC_API_KEY") is None
+    assert json.loads(lab.LIVE_SETTINGS.read_text())["brain_provider"] == "deepseek"
+    assert out["vault_count"] == 2
+    # a reconfigure that adds Claude keeps the working brain rather than silently switching it
+    lab.write_files(dict(config, token="", passphrase="", anthropic="sk-ant-later"))
+    v = lab.current_vault()
+    assert v.get("ANTHROPIC_API_KEY") == "sk-ant-later" and v.get("DEEPSEEK_API_KEY") == "sk-deepseek-test"
+    assert json.loads(lab.LIVE_SETTINGS.read_text())["brain_provider"] == "deepseek"
+
+
+def test_all_three_keys_prefer_claude(lab, config):
+    import json
+    lab.write_files(dict(config, openai="sk-openai-test", deepseek="sk-deepseek-test"))
+    v = lab.current_vault()
+    assert {v.get("ANTHROPIC_API_KEY"), v.get("OPENAI_API_KEY"), v.get("DEEPSEEK_API_KEY")} == {"sk-ant-test-value", "sk-openai-test", "sk-deepseek-test"}
+    assert json.loads(lab.LIVE_SETTINGS.read_text())["brain_provider"] == "claude"

@@ -182,11 +182,19 @@
   </section>
 
   <section data-step="STEP 3 / 5">
-    <h2>The model</h2>
-    <p class="help">An API key from <a href="https://console.anthropic.com" target="_blank" rel="noopener">console.anthropic.com</a>. The bot, and the tool builder, run on it.</p>
-    <label for="anthropic">Anthropic API key</label>
+    <h2>The brain</h2>
+    <p class="help">At least one of these. The bot answers with the first one you give (Claude preferred); an owner can switch later in chat or here.
+      The tool builder (the forge) uses Claude when it has a key, so Anthropic is the one to have if you can.</p>
+    <label for="anthropic">Anthropic API key <span class="muted" style="text-transform:none;letter-spacing:0">— <a href="https://console.anthropic.com" target="_blank" rel="noopener">console.anthropic.com</a></span></label>
     <div class="row"><input id="anthropic" type="password" autocomplete="off" spellcheck="false" placeholder="sk-ant-..."><button type="button" onclick="reveal('anthropic')">show</button></div>
     <div class="status" id="s-anthropic"></div>
+    <label for="openai">OpenAI API key <span class="muted" style="text-transform:none;letter-spacing:0">— <a href="https://platform.openai.com/api-keys" target="_blank" rel="noopener">platform.openai.com</a></span></label>
+    <div class="row"><input id="openai" type="password" autocomplete="off" spellcheck="false" placeholder="sk-... (optional)"><button type="button" onclick="reveal('openai')">show</button></div>
+    <div class="status" id="s-openai"></div>
+    <label for="deepseek">DeepSeek API key <span class="muted" style="text-transform:none;letter-spacing:0">— <a href="https://platform.deepseek.com/api_keys" target="_blank" rel="noopener">platform.deepseek.com</a></span></label>
+    <div class="row"><input id="deepseek" type="password" autocomplete="off" spellcheck="false" placeholder="sk-... (optional)"><button type="button" onclick="reveal('deepseek')">show</button></div>
+    <div class="status" id="s-deepseek"></div>
+    <div class="status" id="s-brain"></div>
   </section>
 
   <section data-step="STEP 4 / 5">
@@ -276,7 +284,7 @@
       <button type="button" onclick="addSecret()">add</button>
     </div>
     <p class="help" style="margin-top:6px">Names are what a tool declares in its spec; the bot's own are <code>DISCORD_TOKEN</code>, <code>ANTHROPIC_API_KEY</code>,
-      <code>ELEVENLABS_API_KEY</code>, <code>ELEVEN_VOICE_ID</code>.</p>
+      <code>OPENAI_API_KEY</code>, <code>DEEPSEEK_API_KEY</code>, <code>ELEVENLABS_API_KEY</code>, <code>ELEVEN_VOICE_ID</code>.</p>
 
     <h2 style="margin-top:22px">Settings</h2>
     <div id="settings-form"></div>
@@ -374,15 +382,22 @@ const debounce = (fn, ms) => { let t; return (...a) => { clearTimeout(t); t = se
 let state = { kits: {}, discord: null, voices: [], checks: {} };
 function reveal(id) { const i = $(id); i.type = i.type === "password" ? "text" : "password"; }
 
-// status lines double as the progress meter: token, owners, anthropic, kit are required; eleven and tz are bonus bars
-const REQUIRED = ["token", "owners", "anthropic", "kit"];
+// status lines double as the progress meter: token, owners, a brain key, kit are required; eleven and tz are bonus bars
+const REQUIRED = ["token", "owners", "brain", "kit"];
+const BRAINS = ["anthropic", "openai", "deepseek"];
 function status(id, cls, text) {
   const el = $("s-" + id); el.className = "status " + cls; el.textContent = text;
   const input = $(id); if (input) input.className = cls === "ok" ? "ok" : cls === "bad" ? "bad" : "";
-  state.checks[id] = cls === "ok"; meter();
+  state.checks[id] = cls === "ok";
+  if (BRAINS.includes(id)) {                                  // any one working brain key satisfies the requirement
+    const ok = BRAINS.filter(b => state.checks[b]);
+    state.checks.brain = ok.length > 0;
+    const sb = $("s-brain"); sb.className = "status " + (ok.length ? "ok" : "muted"); sb.textContent = ok.length ? `brain: ${ok[0]} answers first${ok.length > 1 ? "; " + ok.slice(1).join(", ") + " available to switch to" : ""}` : "one working key is required";
+  }
+  meter();
 }
 function meter() {
-  const passed = ["token", "owners", "anthropic", "kit", "eleven", "tz"].filter(k => state.checks[k]).length;
+  const passed = ["token", "owners", "brain", "kit", "eleven", "tz"].filter(k => state.checks[k]).length;
   [...$("bars").children].forEach((b, i) => b.classList.toggle("on", i < passed));
   $("meter-text").textContent = `${passed}/6 checks`;
   const ready = REQUIRED.every(k => state.checks[k]);
@@ -422,6 +437,8 @@ async function init() {
   $("kit").addEventListener("input", () => { $("kit").dataset.touched = "1"; checkKit(); });
   $("token").addEventListener("input", debounce(checkDiscord, 500));
   $("anthropic").addEventListener("input", debounce(checkAnthropic, 500));
+  $("openai").addEventListener("input", debounce(checkOpenai, 500));
+  $("deepseek").addEventListener("input", debounce(checkDeepseek, 500));
   $("eleven").addEventListener("input", debounce(checkEleven, 500));
   $("owners").addEventListener("input", debounce(checkOwners, 600));
   $("who").addEventListener("input", debounce(searchMembers, 400));
@@ -489,7 +506,9 @@ async function loadVault() {
   paintNeed(r.secrets);
   if (firstNeed) { const btn = firstNeed.querySelector(".acts button:last-of-type"); if (btn && btn.textContent === "add value") btn.click(); }   // the first needed field opens itself
   status("vault", r.secrets.length ? "ok" : "muted", r.secrets.length ? `${r.secrets.length} secrets, vault v${r.version}` : "the vault is empty");
-  const missing = ["DISCORD_TOKEN", "ANTHROPIC_API_KEY"].filter(n => !r.secrets.some(s => s.name === n && !s.pending));
+  const have = (n) => r.secrets.some(s => s.name === n && !s.pending);
+  const missing = have("DISCORD_TOKEN") ? [] : ["DISCORD_TOKEN"];
+  if (!["ANTHROPIC_API_KEY", "OPENAI_API_KEY", "DEEPSEEK_API_KEY"].some(have)) missing.push("a model key (ANTHROPIC_API_KEY, OPENAI_API_KEY or DEEPSEEK_API_KEY)");
   if (missing.length) status("vault", "warn", `missing: ${missing.join(", ")} — the bot cannot run without these; add them below`);
 }
 function rowAfter(btn, html) {
@@ -653,13 +672,16 @@ async function checkOwners() {
   const bad = r.filter(x => !x.ok);
   status("owners", bad.length ? "bad" : "ok", r.map(x => x.ok ? x.name : `${x.id}: not found`).join(", "));
 }
-async function checkAnthropic() {
-  const key = $("anthropic").value.trim();
-  if (!key) return status("anthropic", "muted", "");
-  if (!key.startsWith("sk-ant-")) return status("anthropic", "bad", "Anthropic keys start with sk-ant-");
-  status("anthropic", "muted busy", "pinging the model API");
-  const r = await api("/api/check/anthropic", { key });
-  status("anthropic", r.ok ? "ok" : (r.offline ? "warn" : "bad"), r.ok ? "Key accepted. Model link up." : r.error);
+async function checkAnthropic() { return checkBrain("anthropic", (k) => k.startsWith("sk-ant-"), "Anthropic keys start with sk-ant-"); }
+async function checkOpenai() { return checkBrain("openai", (k) => k.startsWith("sk-"), "OpenAI keys start with sk-"); }
+async function checkDeepseek() { return checkBrain("deepseek", (k) => k.startsWith("sk-"), "DeepSeek keys start with sk-"); }
+async function checkBrain(id, shape, shapeMsg) {
+  const key = $(id).value.trim();
+  if (!key) return status(id, "muted", "");
+  if (!shape(key)) return status(id, "bad", shapeMsg);
+  status(id, "muted busy", "pinging the model API");
+  const r = await api("/api/check/" + id, { key });
+  status(id, r.ok ? "ok" : (r.offline ? "warn" : "bad"), r.ok ? "Key accepted. Model link up." : r.error);
 }
 async function checkEleven() {
   const key = $("eleven").value.trim(); $("voicebox").style.display = "none";
@@ -688,7 +710,7 @@ function checkKit() {
 $("keep_kit")?.addEventListener("change", () => { if ($("keep_kit").checked) status("kit", "ok", `Keeping kits/${$("kit").value.trim()}.`); else checkKit(); });
 async function saveAll() {
   $("problems").textContent = ""; $("submit").disabled = true; $("submit").textContent = "writing…";
-  const body = { token: $("token").value.trim(), anthropic: $("anthropic").value.trim(), owners: $("owners").value.trim(), name: $("name").value.trim(),
+  const body = { token: $("token").value.trim(), anthropic: $("anthropic").value.trim(), openai: $("openai").value.trim(), deepseek: $("deepseek").value.trim(), owners: $("owners").value.trim(), name: $("name").value.trim(),
                  eleven: $("eleven").value.trim(), voice: $("eleven").value.trim() ? $("voice").value : "", auto: $("auto").value.trim(), kit: $("kit").value.trim(),
                  kit_remote: $("kit_remote").value.trim(), tz: $("tz").value.trim(), app_id: state.discord?.app_id || "", keep_kit: $("keep_kit").checked,
                  replace: $("replace").checked, fresh_secrets: $("fresh_secrets").checked, passphrase: $("passphrase").value };

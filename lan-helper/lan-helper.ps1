@@ -24,10 +24,12 @@ function Read-Token {
   $m = Select-String -Path $EnvFile -Pattern '^INTERNAL_TOKEN=(.+)$' | Select-Object -First 1
   if ($m) { return $m.Matches[0].Groups[1].Value.Trim().Trim('"') } else { return "" }
 }
-$Token = Read-Token
-if (-not $Token) { Write-Host "no INTERNAL_TOKEN in $EnvFile - refusing to start without a shared secret"; exit 2 }
-
 function Log($m) { Write-Host ("{0} {1}" -f (Get-Date -Format "HH:mm:ss"), $m) }
+# The installer registers this helper before setup has written .env, so wait for the shared secret rather than die;
+# it is re-read on every request, so a reconfigure that rotates INTERNAL_TOKEN needs no restart.
+$Token = Read-Token
+if (-not $Token) { Log "waiting for INTERNAL_TOKEN in $EnvFile (setup writes it); nothing is answered until then" }
+while (-not $Token) { Start-Sleep -Seconds 5; $Token = Read-Token }
 function ToJson($o) { $o | ConvertTo-Json -Depth 6 -Compress }
 
 # ---------------------------------------------------------------- the network bits
@@ -209,7 +211,8 @@ function Send-Response($stream, [int]$code, [string]$body, [string]$ctype = "app
 }
 function Handle($method, $path, $query, $headers, $body) {
   if ($path -eq "/health" -and -not $headers["x-lan-token"]) { return 200, (ToJson @{ ok = $true; helper = "lan-helper"; auth = "required" }) }
-  if ($headers["x-lan-token"] -ne $Token) { return 401, (ToJson @{ error = "bad or missing X-LAN-Token" }) }
+  $fresh = Read-Token; if ($fresh) { $script:Token = $fresh }
+  if ($headers["x-lan-token"] -ne $script:Token) { return 401, (ToJson @{ error = "bad or missing X-LAN-Token" }) }
   $j = @{}; if ($body) { try { $j = $body | ConvertFrom-Json } catch { return 400, (ToJson @{ error = "body is not JSON" }) } }
   switch ("$method $path") {
     "GET /health" { $r = Get-NetRoute -DestinationPrefix "0.0.0.0/0" -AddressFamily IPv4 -ErrorAction SilentlyContinue | Sort-Object RouteMetric, InterfaceMetric | Select-Object -First 1

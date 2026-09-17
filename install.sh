@@ -10,6 +10,10 @@ command -v docker >/dev/null 2>&1 || { echo "Docker is not installed. Install Do
 docker compose version >/dev/null 2>&1 || { echo "'docker compose' is not available; update Docker."; exit 1; }
 docker info >/dev/null 2>&1 || { echo "Docker is installed but not running. Start it, then re-run."; exit 1; }
 
+# LAN discovery: on Linux the containers share the host network, so no helper is needed. On Windows use install.ps1,
+# which installs the LAN helper first.
+case "$(uname -s)" in MINGW*|MSYS*|CYGWIN*) echo "On Windows run install.ps1 instead (it also installs the LAN helper): powershell -ExecutionPolicy Bypass -File .\\install.ps1"; exit 1;; esac
+
 echo "Building the three images (several minutes the first time; the voice image downloads a speech model)..."
 docker compose build
 echo

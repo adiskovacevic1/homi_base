@@ -11,8 +11,9 @@ folder this repo ignores, so the code can be public and shared while every house
 
 ## Install
 
-Needs Docker Desktop (Windows, macOS) or Docker Engine (Linux), a Discord bot of your own and an Anthropic API
-key. ElevenLabs is optional.
+Needs Docker Desktop (Windows, macOS) or Docker Engine (Linux), a Discord bot of your own and at least one model
+API key: Anthropic (preferred, the tool builder uses it), OpenAI or DeepSeek. ElevenLabs is optional. On Windows the
+installer first installs the LAN helper (one administrator prompt) so the bot can see the devices in the house.
 
 ```bash
 git clone -b stable https://github.com/adiskovacevic1/homi_base.git

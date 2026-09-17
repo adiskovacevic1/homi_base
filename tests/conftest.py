@@ -21,6 +21,7 @@ def lab(tmp_path, monkeypatch):
     monkeypatch.setattr(S, "KITS", tmp_path / "bots" / "example-bot" / "kits")
     monkeypatch.setattr(S, "VAULT_PATH", tmp_path / "bots" / "example-bot" / "data" / "secrets_manager" / "vault.enc")
     monkeypatch.setattr(S, "RESTART_MARKER", tmp_path / ".restart-needed")
+    monkeypatch.setattr(S, "LIVE_SETTINGS", tmp_path / "bots" / "example-bot" / "data" / "settings.json")
     for p in (S.BOT_ENV.parent, S.VOICE_ENV.parent, S.KITS):
         p.mkdir(parents=True, exist_ok=True)
     monkeypatch.delenv("VAULT_PASSPHRASE", raising=False)

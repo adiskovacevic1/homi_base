@@ -8,7 +8,7 @@ browser (`install.sh --terminal`) and holds the file-writing code both share.
 Writes bots/example-bot/.env, bots/voice-bot/.env and ./.env (all git-ignored), creates the household's kit folder,
 and prints the Discord invite link. Nothing is sent anywhere; the values only land in those files on this PC.
 """
-import getpass, os, re, secrets, sys, time
+import getpass, json, os, re, secrets, sys, time
 from pathlib import Path
 
 import vault as vaultlib                              # bots/example-bot/vault.py, copied next to this file in the image
@@ -23,6 +23,9 @@ RESTART_MARKER = LAB / ".restart-needed"              # the console leaves this 
 # View Channels, Send Messages, Read Message History, Attach Files, Embed Links, Add Reactions, Connect, Speak, Use Voice Activity
 INVITE_PERMS = 1024 | 2048 | 65536 | 32768 | 16384 | 64 | 1048576 | 2097152 | 33554432
 KIT_RE = re.compile(r"^[a-z][a-z0-9-]{1,40}$")
+# the model keys setup can take; in this order the first one given becomes the brain (Claude preferred: the forge uses it)
+BRAIN_KEYS = {"anthropic": ("ANTHROPIC_API_KEY", "claude"), "openai": ("OPENAI_API_KEY", "openai"), "deepseek": ("DEEPSEEK_API_KEY", "deepseek")}
+LIVE_SETTINGS = LAB / "bots" / "example-bot" / "data" / "settings.json"   # the bot's live switches; setup sets brain_provider here
 CONTROL = re.compile(r"\x1b\[[0-9;?]*[ -/]*[@-~]|[\x00-\x1f\x7f]")   # terminal escape sequences (bracketed-paste markers) and control chars
 
 
@@ -100,8 +103,13 @@ def validate(cfg):
     problems = []
     if not looks_like_discord_token(cfg.get("token", "")):
         problems.append("the Discord token does not look like one (about 70 characters with two dots)")
-    if not cfg.get("anthropic", "").startswith("sk-ant-"):
+    if cfg.get("anthropic") and not cfg["anthropic"].startswith("sk-ant-"):
         problems.append("the Anthropic key should start with sk-ant-")
+    for k, label in (("openai", "OpenAI"), ("deepseek", "DeepSeek")):
+        if cfg.get(k) and not cfg[k].startswith("sk-"):
+            problems.append(f"the {label} key should start with sk-")
+    if not any(cfg.get(k) for k in BRAIN_KEYS):
+        problems.append("at least one model key is required: Anthropic, OpenAI or DeepSeek")
     if cfg.get("passphrase") and len(cfg["passphrase"]) < 8:
         problems.append("the vault passphrase should be at least 8 characters")
     owners = [p.strip() for p in cfg.get("owners", "").split(",") if p.strip()]
@@ -171,7 +179,8 @@ def write_files(cfg):
     # blank on a reconfigure = keep what is already configured: the vault first, then the env file (which is where an
     # install made before the vault held these, and where the voice bot's ElevenLabs settings used to live)
     old_voice = env_values(VOICE_ENV)
-    for env_name, key in (("DISCORD_TOKEN", "token"), ("ANTHROPIC_API_KEY", "anthropic"), ("ELEVENLABS_API_KEY", "eleven"), ("ELEVEN_VOICE_ID", "voice")):
+    for env_name, key in (("DISCORD_TOKEN", "token"), ("ANTHROPIC_API_KEY", "anthropic"), ("OPENAI_API_KEY", "openai"), ("DEEPSEEK_API_KEY", "deepseek"),
+                          ("ELEVENLABS_API_KEY", "eleven"), ("ELEVEN_VOICE_ID", "voice")):
         if not cfg.get(key):
             cfg[key] = existing.get(env_name) or (old.get(env_name, "") if keep else "") or (old_voice.get(env_name, "") if keep else "")
     problems = validate(cfg)
@@ -186,7 +195,20 @@ def write_files(cfg):
     wake = "hey bot," + ",".join(w for w in dict.fromkeys([name.lower(), name.lower().replace(" ", "")]) if w and w != "hey bot")
 
     v.set("DISCORD_TOKEN", cfg["token"], "the bot's Discord token - a change needs `docker compose up -d`")
-    v.set("ANTHROPIC_API_KEY", cfg["anthropic"], "the model key; the bot and the forge use it, a change applies live")
+    brain_provider = None
+    for k, (env_name, provider) in BRAIN_KEYS.items():
+        if cfg.get(k):
+            v.set(env_name, cfg[k], f"model key for {provider}; a change applies live" + (" (the forge builds tools with it)" if k == "anthropic" else ""))
+            brain_provider = brain_provider or provider
+    if brain_provider:                                       # the first key given answers; owners switch later in chat or the console
+        try:
+            live = json.loads(LIVE_SETTINGS.read_text(encoding="utf-8")) if LIVE_SETTINGS.exists() else {}
+        except ValueError:
+            live = {}
+        if live.get("brain_provider") not in [p for k, (_, p) in BRAIN_KEYS.items() if cfg.get(k)]:
+            live["brain_provider"] = brain_provider; live.pop("brain_model", None)
+            LIVE_SETTINGS.parent.mkdir(parents=True, exist_ok=True)
+            LIVE_SETTINGS.write_text(json.dumps(live, indent=2), encoding="utf-8")
     if eleven:
         v.set("ELEVENLABS_API_KEY", eleven, "ElevenLabs, for the voice bot's hearing and speaking")
     if voice:
@@ -297,7 +319,7 @@ You need a Discord bot of your own. In https://discord.com/developers/applicatio
   3. Bot tab -> Privileged Gateway Intents -> turn on MESSAGE CONTENT INTENT. Without it the bot hears nothing.
   4. General Information -> copy the Application ID (used for the invite link below).
 Also: your own Discord user ID (Settings -> Advanced -> Developer Mode, then right-click yourself -> Copy User ID)
-and an Anthropic API key from https://console.anthropic.com. ElevenLabs is optional.
+and a model API key: Anthropic (https://console.anthropic.com), OpenAI or DeepSeek - one is enough. ElevenLabs is optional.
 
 Paste with a RIGHT-CLICK in this window (Ctrl+V does not paste here). Secret values are not shown as you paste them.
 """)
@@ -306,8 +328,18 @@ Paste with a RIGHT-CLICK in this window (Ctrl+V does not paste here). Secret val
     reconfig = config_exists()
     cfg["token"] = ask("Discord bot token" + (" (Enter to keep the current one)" if reconfig else ""), secret=True, required=not reconfig,
                        check=looks_like_discord_token, hint="a Discord token is ~70 characters with two dots; Bot tab -> Reset Token to get a fresh one")
-    cfg["anthropic"] = ask("Anthropic API key" + (" (Enter to keep the current one)" if reconfig else ""), secret=True, required=not reconfig,
+    print("The brain: at least one model key. The first you give answers first (Claude preferred; the forge builds tools with it).")
+    cfg["anthropic"] = ask("Anthropic API key" + (" (Enter to keep the current one)" if reconfig else " (Enter to skip)"), secret=True,
                            check=lambda v: v.startswith("sk-ant-"), hint="starts with sk-ant-")
+    cfg["openai"] = ask("OpenAI API key (Enter to skip)", secret=True, check=lambda v: v.startswith("sk-"), hint="starts with sk-")
+    cfg["deepseek"] = ask("DeepSeek API key (Enter to skip)", secret=True, check=lambda v: v.startswith("sk-"), hint="starts with sk-")
+    while not reconfig and not any(cfg.get(k) for k in BRAIN_KEYS):
+        print("   one model key is required")
+        cfg["anthropic"] = ask("Anthropic API key (or Enter, then OpenAI/DeepSeek)", secret=True, check=lambda v: v.startswith("sk-ant-"), hint="starts with sk-ant-")
+        if not cfg["anthropic"]:
+            cfg["openai"] = ask("OpenAI API key", secret=True, check=lambda v: v.startswith("sk-"), hint="starts with sk-")
+        if not cfg["anthropic"] and not cfg["openai"]:
+            cfg["deepseek"] = ask("DeepSeek API key", secret=True, check=lambda v: v.startswith("sk-"), hint="starts with sk-")
     cfg["owners"] = ask("Your Discord user ID(s), comma-separated - the only people allowed to give the bot new tools and a shell",
                         required=True, check=lambda v: all(p.strip().isdigit() for p in v.split(",")), hint="numbers only")
     cfg["name"] = ask("What should the bot call itself", "the house bot")
