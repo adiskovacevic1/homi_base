@@ -32,8 +32,9 @@ in your server you find yourself by name from the server's members and click, no
 still works). The Anthropic key is tried; an ElevenLabs key turns the voice field into a list of your voices with
 previews. Saving writes the `.env` files and the installer starts everything. `./install.sh --terminal` (or `-Terminal` in PowerShell)
 asks the same questions in the terminal instead, for a machine without a browser; there, paste with a right-click,
-since Ctrl+V does not paste into a Docker terminal on Windows. The bot starts with nine generic tools (weather, web fetch, YouTube
-search, memory, file handling, and Discord's own API scoped to reading, posting and the bot's own messages) from
+since Ctrl+V does not paste into a Docker terminal on Windows. The bot starts with ten generic tools (weather, web fetch, YouTube
+search, memory, file handling, Discord's own API scoped to reading, posting and the bot's own messages, and LAN
+discovery through the host helper) from
 `bots/example-bot/starter-tools/` and grows its own kit from there, so every
 install becomes its household's bot rather than a copy of someone else's. Re-run the installer any time to
 reconfigure.
