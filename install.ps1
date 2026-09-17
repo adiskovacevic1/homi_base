@@ -36,7 +36,13 @@ if ($task) {
   Write-Host "LAN helper: installing (Windows will ask for administrator approval once)..."
   try {
     $p = Start-Process -PassThru -Wait -Verb RunAs powershell.exe -ArgumentList "-NoProfile -ExecutionPolicy Bypass -File `"$PSScriptRoot\lan-helper\install-lan-helper.ps1`""
-    if ($p.ExitCode -eq 0 -and (Get-ScheduledTask -TaskName "homi lan-helper" -ErrorAction SilentlyContinue)) { Write-Host "LAN helper: installed and running." }
+    if ($p.ExitCode -eq 0 -and (Get-ScheduledTask -TaskName "homi lan-helper" -ErrorAction SilentlyContinue)) {
+      # registered; make sure it is actually up (a just-registered task has been seen not to start from the elevated installer)
+      $up = Test-LanHelper
+      if (-not $up) { Start-ScheduledTask -TaskName "homi lan-helper" -ErrorAction SilentlyContinue; for ($i = 0; $i -lt 20; $i++) { if (Test-LanHelper) { $up = $true; break }; Start-Sleep -Milliseconds 500 } }
+      if ($up) { Write-Host "LAN helper: installed and running." }
+      else { Write-Host "LAN helper: installed; it answers once setup has written the shared token (or check: Get-ScheduledTask 'homi lan-helper' | Get-ScheduledTaskInfo)." }
+    }
     else { Write-Host "LAN helper: not installed (exit $($p.ExitCode)). The bot works without it, just blind to the network; run lan-helper\install-lan-helper.ps1 as administrator later." -ForegroundColor Yellow }
   } catch { Write-Host "LAN helper: skipped (approval declined). The bot works without it, just blind to the network; run lan-helper\install-lan-helper.ps1 as administrator later." -ForegroundColor Yellow }
 }

@@ -47,6 +47,8 @@ Register-ScheduledTask -TaskName $TaskName -Action $action -Trigger $trigger -Se
 Get-CimInstance Win32_Process -Filter "Name = 'powershell.exe'" | Where-Object { $_.CommandLine -like "*lan-helper.ps1*" } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }
 Start-ScheduledTask -TaskName $TaskName
 Start-Sleep -Seconds 3
+# a freshly registered task has been seen to stay in "Ready" after the first Start-ScheduledTask; ask once more if so
+if ((Get-ScheduledTask -TaskName $TaskName).State -ne "Running") { Start-ScheduledTask -TaskName $TaskName; Start-Sleep -Seconds 3 }
 try { $h = Invoke-WebRequest -UseBasicParsing "http://127.0.0.1:$Port/health" -TimeoutSec 5; Write-Host "lan-helper is up: $($h.Content)" }
 catch {
   if (Test-Path (Join-Path (Split-Path -Parent $PSScriptRoot) "bots\example-bot\.env")) { Write-Host "registered, but the helper did not answer yet on port $Port. Check: Get-ScheduledTask '$TaskName' | Get-ScheduledTaskInfo" }
