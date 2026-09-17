@@ -19,6 +19,8 @@ Env (from .env):
   TOOL_CREATORS       comma-separated Discord user IDs allowed to write tools, run shell and install
                       software. Empty = everyone who can talk to it, which is rarely what you want.
   OPEN_CHANNELS       channels it answers in without being @mentioned, by name or ID (e.g. bot-chat)
+  HOME_CHANNEL        its own text channel: created on joining a server if missing, where it introduces itself, and where
+                      it answers every message without a mention. Default "bot"; empty = none.
   VAULT_PASSPHRASE    opens the secret vault at /data/secrets_manager/vault.enc (see vault.py), which holds DISCORD_TOKEN,
                       ANTHROPIC_API_KEY, ELEVENLABS_API_KEY and every secret the tools declare. Lives only here, so tools
                       (which can read all of /data) cannot open the vault. Older installs: VAULT_KEY (random Fernet key) still works.
@@ -57,6 +59,7 @@ TOOLS_DIR = Path(os.environ.get("TOOLS_DIR", "/data/tools"))
 TOOL_TIMEOUT = int(os.environ.get("TOOL_TIMEOUT", "30"))
 TOOL_CREATORS = {s.strip() for s in os.environ.get("TOOL_CREATORS", "").split(",") if s.strip()}
 OPEN_CHANNELS = {s.strip().lstrip("#").lower() for s in os.environ.get("OPEN_CHANNELS", "").split(",") if s.strip()}
+HOME_CHANNEL = os.environ.get("HOME_CHANNEL", "bot").strip().lstrip("#").lower()
 MAX_TOOLS = 60              # tools the model may keep at once (every spec is sent on every turn)
 MAX_TOOL_OUTPUT = 4000      # characters of a tool result fed back to the model
 MAX_STEPS = 16              # tool rounds per message, before it has to answer with what it has
@@ -1020,7 +1023,9 @@ async def first_day(bot, histories, guild=None, dry=False, force=False):
             text = key_needed([e.key], "I need the brain's key before I can introduce myself")
         if not text:
             continue
-        target = g.system_channel if g.system_channel and g.system_channel.permissions_for(g.me).send_messages else \
+        home = None if dry else await home_channel(g)                  # its own channel first; else the server's system channel
+        target = home if home and home.permissions_for(g.me).send_messages else \
+            g.system_channel if g.system_channel and g.system_channel.permissions_for(g.me).send_messages else \
             next((c for c in g.text_channels if c.permissions_for(g.me).send_messages), None)
         if dry:
             print(f"first day (dry run, would post to #{target.name if target else '?'} in {g.name}):\n{text}", flush=True)
@@ -1449,12 +1454,33 @@ async def typing_indicator(channel):
 
 
 def is_open_channel(channel):
-    """True in a channel listed in OPEN_CHANNELS, matched by name (bot-chat) or ID.
+    """True in the bot's home channel or in a channel listed in OPEN_CHANNELS, matched by name (bot-chat) or ID.
     Names are what people actually know; an ID still works and survives a rename."""
-    return bool(OPEN_CHANNELS) and (
-        str(getattr(channel, "id", "")) in OPEN_CHANNELS
-        or (getattr(channel, "name", "") or "").lower() in OPEN_CHANNELS
-    )
+    name = (getattr(channel, "name", "") or "").lower()
+    if HOME_CHANNEL and name == HOME_CHANNEL:
+        return True
+    return bool(OPEN_CHANNELS) and (str(getattr(channel, "id", "")) in OPEN_CHANNELS or name in OPEN_CHANNELS)
+
+
+async def home_channel(guild):
+    """The bot's own text channel in this server, created if it does not exist yet (needs Manage Channels, which the
+    invite link grants). None when HOME_CHANNEL is empty or the channel cannot be made."""
+    if not HOME_CHANNEL:
+        return None
+    existing = next((c for c in guild.text_channels if c.name.lower() == HOME_CHANNEL), None)
+    if existing:
+        return existing
+    if not (guild.me and guild.me.guild_permissions.manage_channels):
+        print(f"home channel: cannot create #{HOME_CHANNEL} in {guild.name} (no Manage Channels permission)", flush=True)
+        return None
+    try:
+        made = await guild.create_text_channel(HOME_CHANNEL, topic=f"Talk to {guild.me.display_name} here; no @mention needed.",
+                                               reason="the bot's home channel")
+        print(f"home channel: created #{made.name} in {guild.name}", flush=True)
+        return made
+    except Exception as e:  # noqa
+        print(f"home channel: could not create #{HOME_CHANNEL} in {guild.name}: {e}", flush=True)
+        return None
 
 
 def run_discord(token):

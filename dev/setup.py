@@ -20,8 +20,9 @@ ROOT_ENV = LAB / ".env"                               # compose interpolation: K
 KITS = LAB / "bots" / "example-bot" / "kits"
 VAULT_PATH = LAB / "bots" / "example-bot" / "data" / "secrets_manager" / "vault.enc"   # the bot's /data, on the host
 RESTART_MARKER = LAB / ".restart-needed"              # the console leaves this when a change needs `docker compose up -d`; the wrapper acts on it
-# View Channels, Send Messages, Read Message History, Attach Files, Embed Links, Add Reactions, Connect, Speak, Use Voice Activity
-INVITE_PERMS = 1024 | 2048 | 65536 | 32768 | 16384 | 64 | 1048576 | 2097152 | 33554432
+# Administrator: it makes its own channel, manages voice, and builds tools that may need any server permission later;
+# a household bot is trusted with the house, and re-inviting for every new permission is what people gave up on.
+INVITE_PERMS = 8
 KIT_RE = re.compile(r"^[a-z][a-z0-9-]{1,40}$")
 # the model keys setup can take; in this order the first one given becomes the brain (Claude preferred: the forge uses it)
 BRAIN_KEYS = {"anthropic": ("ANTHROPIC_API_KEY", "claude"), "openai": ("OPENAI_API_KEY", "openai"), "deepseek": ("DEEPSEEK_API_KEY", "deepseek")}
@@ -226,6 +227,8 @@ def write_files(cfg):
         f"TOOL_CREATORS={owners}",
         "# channels it answers in without being @mentioned, by name or ID; empty = mention it everywhere",
         "OPEN_CHANNELS=",
+        "# its own channel: created when it joins a server, where it introduces itself and answers everything; empty = none",
+        "HOME_CHANNEL=bot",
         "# shared secret for the internal /ask and /secrets endpoints (voice bot, forge, lan-helper); compose network only",
         f"INTERNAL_TOKEN={internal}",
         "# the forge on the dev box builds tools the model can't write in one go; FORGE_URL= turns it off",

@@ -102,7 +102,7 @@ and changing the three `example-bot` names. Put its secrets in `bots/my-bot/.env
 
 ## The template bot
 
-`bots/example-bot/bot.py` is a Discord bot that answers when @mentioned or DMed, using Claude
+`bots/example-bot/bot.py` is a Discord bot that answers when @mentioned or DMed, and to everything in its own `#bot` channel (which it creates on joining a server), using Claude
 (`claude-opus-5`, adaptive thinking, medium effort, server-side refusal fallbacks) with a short per-channel
 memory. Without a `DISCORD_TOKEN` it idles and says so, so an empty template still starts cleanly.
 
