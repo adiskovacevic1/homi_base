@@ -164,9 +164,12 @@ function Query-Mdns([string]$type, [int]$timeoutSec) {
   $services = @()
   foreach ($r in ($recs | Where-Object { $_.type -eq "PTR" })) {                 # ($Host is reserved in PowerShell, hence hostName)
     $inst = $byName[$r.target]; $hostName = if ($inst) { $inst.host } else { $null }; $a = if ($hostName -and $byName[$hostName]) { $byName[$hostName].ip } else { $null }
-    $services += @{ instance = $r.target; type = $r.name; host = $hostName; port = $(if ($inst) { $inst.port }); ip = $(if ($a) { $a } else { $r.from }); txt = $(if ($inst) { $inst.txt }) }
+    $services += @{ instance = $r.target; type = $r.name; host = $hostName; port = $(if ($inst -and $inst.port) { [int]$inst.port } else { $null })
+                    ip = $(if ($a) { $a } else { $r.from }); txt = @(if ($inst -and $inst.txt) { $inst.txt }) }
   }
-  return @{ type = $type; count = $services.Count; services = ($services | Sort-Object { $_.instance } -Unique); raw_records = $recs.Count }
+  # @(...) throughout: ConvertTo-Json writes an empty pipeline as {} and a single item as a bare object, and the bot
+  # expects a list every time (its first-day discovery once crashed on "services": {}).
+  return @{ type = $type; count = $services.Count; services = @($services | Sort-Object { $_.instance } -Unique); raw_records = $recs.Count }
 }
 function Query-Ssdp([string]$st, [int]$timeoutSec) {
   $msg = "M-SEARCH * HTTP/1.1`r`nHOST: 239.255.255.250:1900`r`nMAN: `"ssdp:discover`"`r`nMX: $([Math]::Max(1, [Math]::Min(5, $timeoutSec)))`r`nST: $st`r`n`r`n"

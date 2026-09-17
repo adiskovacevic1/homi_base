@@ -978,21 +978,37 @@ def discover_house():
     if not code_path("lan").exists():
         return {"available": False, "reason": "the lan tool is not in the kit"}
     out = {"available": True}
+
+    def rows(r, key):
+        # The helper is PowerShell, whose JSON writer turns an empty list into {} and a one-item list into a bare object;
+        # take whatever came and hand back a list of dicts.
+        v = (r or {}).get(key) if isinstance(r, dict) else None
+        if isinstance(v, dict):
+            v = [v] if v else []
+        return [x for x in (v or []) if isinstance(x, dict)]
+
+    def text(x, n):
+        return (x if isinstance(x, str) else "")[:n]
     for action, kw in (("mdns", {"timeout": 4}), ("ssdp", {"timeout": 4}), ("arp", {})):
         try:
             r = run_tool("lan", {"action": action, **kw})
         except ToolError as e:
             return {"available": False, "reason": str(e).strip().splitlines()[-1][:300]}   # the last line of a traceback is the message
         if action == "mdns":
-            out["mdns_services"] = [{"instance": s.get("instance", "")[:60], "type": s.get("type"), "ip": s.get("ip")} for s in r.get("services", [])][:40]
+            out["mdns_services"] = [{"instance": text(s.get("instance"), 60), "type": s.get("type"), "ip": s.get("ip")} for s in rows(r, "services")][:40]
         elif action == "ssdp":
-            out["ssdp_devices"] = [{"ip": d.get("ip"), "server": (d.get("server") or "")[:50], "st": (d.get("st") or "")[:60]} for d in r.get("devices", [])][:40]
+            out["ssdp_devices"] = [{"ip": d.get("ip"), "server": text(d.get("server"), 50), "st": text(d.get("st"), 60)} for d in rows(r, "devices")][:40]
         else:
-            out["lan_hosts"] = len([n for n in r.get("neighbours", []) if not n["ip"].endswith(".255")])
+            out["lan_hosts"] = len([n for n in rows(r, "neighbours") if not str(n.get("ip", "")).endswith(".255")])
     # named casting targets are the most human-readable thing we have
     try:
         g = run_tool("lan", {"action": "mdns", "service_type": "_googlecast._tcp.local", "timeout": 4})
-        out["cast_targets"] = sorted({next((t[3:] for t in (s.get("txt") or []) if t.startswith("fn=")), s.get("instance", "")[:30]) for s in g.get("services", [])})[:12]
+        names = set()
+        for s in rows(g, "services"):
+            txt = s.get("txt")
+            txt = txt if isinstance(txt, list) else []
+            names.add(next((t[3:] for t in txt if isinstance(t, str) and t.startswith("fn=")), text(s.get("instance"), 30)))
+        out["cast_targets"] = sorted(n for n in names if n)[:12]
     except ToolError:
         pass
     return out
@@ -1021,7 +1037,11 @@ async def first_day(bot, histories, guild=None, dry=False, force=False):
                                 f"then I'll introduce myself properly here. Hold tight.")
             except Exception as e:  # noqa
                 print(f"first day: greeting in #{home.name} failed: {e}", flush=True)
-    house = await asyncio.to_thread(discover_house)
+    try:
+        house = await asyncio.to_thread(discover_house)
+    except Exception as e:  # noqa - the introduction goes out whatever discovery does; a silent bot is the worst outcome
+        print(f"first day: discovery failed: {e!r}", flush=True)
+        house = {"available": False, "reason": f"discovery failed: {type(e).__name__}: {e}"[:300]}
     kit = [s["name"] for s in tool_specs()[len(META_TOOLS):]]
     voice = bool(secret_env(["ELEVENLABS_API_KEY"]).get("ELEVENLABS_API_KEY"))
     posted = None
