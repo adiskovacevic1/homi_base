@@ -11,7 +11,8 @@ Tools live in /data/tools (a Docker volume, so they survive restarts and are rea
 Generated code is never imported by the bot process; each call runs in a separate, time-limited python.
 
 Env (from .env):
-  DISCORD_TOKEN       Discord bot token (normally in the vault). Missing -> the container idles and logs why, so `compose up` is clean.
+  DISCORD_TOKEN       Discord bot token (normally in the vault). Missing or rejected -> the container idles, logs why, and
+                      logs in on its own once a different token is in the vault, so `compose up` is clean either way.
   ANTHROPIC_API_KEY   Anthropic key (normally in the vault; a change there applies to the next message, no restart).
   BOT_MODEL           default claude-opus-5
   BOT_SYSTEM          system prompt (optional)
@@ -1764,9 +1765,8 @@ def main():
     boot = secret_env(["DISCORD_TOKEN", "ANTHROPIC_API_KEY"])
     token = boot.get("DISCORD_TOKEN")
     if not token:
-        print("no DISCORD_TOKEN in the vault or .env — idling. Add it in the console (console.ps1) and restart the container.", flush=True)
-        while True:
-            time.sleep(3600)
+        print("no DISCORD_TOKEN in the vault or .env — idling. Add it in the console (console.ps1); the bot starts on its own once it is there.", flush=True)
+        token = wait_for_token(None)
     if not boot.get("ANTHROPIC_API_KEY"):
         print("warning: no ANTHROPIC_API_KEY in the vault or .env — Claude calls will fail until one is added in the console", flush=True)
     if not TOOL_CREATORS:
@@ -1777,8 +1777,27 @@ def main():
     broken = check_tools()
     if broken:
         print(f"kit check: {len(broken)} tool(s) do not import - {', '.join(broken)} (the daily review proposes repairs; --check-tools lists errors)", flush=True)
-    run_discord(token)
-    return 0
+    import discord
+    while True:
+        try:
+            run_discord(token)
+            return 0
+        except discord.LoginFailure:
+            # A rejected token (reset in the Developer Portal, pasted wrong) used to crash the container, and the restart
+            # policy then hammered Discord's login every few seconds. Idle instead and watch the vault for a new one.
+            print("Discord rejected the token (401: improper token). Reset it in the Developer Portal if you have not, paste the new one "
+                  "into the console (console.ps1 -> DISCORD_TOKEN); the bot logs in on its own once it changes.", flush=True)
+            token = wait_for_token(token)
+
+
+def wait_for_token(rejected):
+    """Poll the vault (and env) every 30 s until a Discord token appears that differs from the rejected one."""
+    while True:
+        time.sleep(30)
+        t = secret_env(["DISCORD_TOKEN"]).get("DISCORD_TOKEN")
+        if t and t != rejected:
+            print("a new DISCORD_TOKEN is in the vault; logging in", flush=True)
+            return t
 
 
 if __name__ == "__main__":
