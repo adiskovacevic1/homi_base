@@ -241,6 +241,8 @@ def write_files(cfg):
         "HOME_CHANNEL=bot",
         "# its running log: one line per thing it does on its own (tools built, used, forge jobs, ideas, keys needed); empty = off",
         "ACTIVITY_CHANNEL=activity",
+        "# direct messages: owners = only the people in TOOL_CREATORS (others are pointed to the server); anyone; off",
+        "DM_POLICY=owners",
         "# shared secret for the internal /ask and /secrets endpoints (voice bot, forge, lan-helper); compose network only",
         f"INTERNAL_TOKEN={internal}",
         "# the forge on the dev box builds tools the model can't write in one go; FORGE_URL= turns it off",

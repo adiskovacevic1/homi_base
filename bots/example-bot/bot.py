@@ -24,6 +24,8 @@ Env (from .env):
                       it answers every message without a mention. Default "bot"; empty = none.
   ACTIVITY_CHANNEL    its running log, created when first needed: one line per tool built, used or forgotten, forge job,
                       daily review, key it is waiting for, and start. Default "activity"; empty = off.
+  DM_POLICY           who it talks to in direct messages: owners (TOOL_CREATORS; the default - anyone else is pointed to
+                      the server), anyone (every member of a shared server), off (no DMs at all).
   VAULT_PASSPHRASE    opens the secret vault at /data/secrets_manager/vault.enc (see vault.py), which holds DISCORD_TOKEN,
                       ANTHROPIC_API_KEY, ELEVENLABS_API_KEY and every secret the tools declare. Lives only here, so tools
                       (which can read all of /data) cannot open the vault. Older installs: VAULT_KEY (random Fernet key) still works.
@@ -64,6 +66,9 @@ TOOL_CREATORS = {s.strip() for s in os.environ.get("TOOL_CREATORS", "").split(",
 OPEN_CHANNELS = {s.strip().lstrip("#").lower() for s in os.environ.get("OPEN_CHANNELS", "").split(",") if s.strip()}
 HOME_CHANNEL = os.environ.get("HOME_CHANNEL", "bot").strip().lstrip("#").lower()
 ACTIVITY_CHANNEL = os.environ.get("ACTIVITY_CHANNEL", "activity").strip().lstrip("#").lower()
+DM_POLICY = os.environ.get("DM_POLICY", "owners").strip().lower()        # owners (default) | anyone | off
+if DM_POLICY not in ("owners", "anyone", "off"):
+    DM_POLICY = "owners"
 MAX_TOOLS = 60              # tools the model may keep at once (every spec is sent on every turn)
 MAX_TOOL_OUTPUT = 4000      # characters of a tool result fed back to the model
 MAX_STEPS = 16              # tool rounds per message, before it has to answer with what it has
@@ -1524,6 +1529,16 @@ async def typing_indicator(channel):
                 pass
 
 
+def dm_allowed(user_id):
+    """Whether this person gets answers in direct messages, per DM_POLICY (owners = TOOL_CREATORS; an empty owner list
+    under 'owners' means everyone, as it does for tools)."""
+    if DM_POLICY == "anyone":
+        return True
+    if DM_POLICY == "off":
+        return False
+    return not TOOL_CREATORS or str(user_id) in TOOL_CREATORS
+
+
 def is_open_channel(channel):
     """True in the bot's home channel or in a channel listed in OPEN_CHANNELS, matched by name (bot-chat) or ID.
     Names are what people actually know; an ID still works and survives a rename."""
@@ -1736,6 +1751,16 @@ def run_discord(token):
             return
         is_dm = msg.guild is None
         if not (is_dm or bot.user in msg.mentions or is_open_channel(msg.channel)):
+            return
+        if is_dm and not dm_allowed(msg.author.id):
+            # a per-person bot: anyone in a shared server can open a DM, but only its owners get answers there
+            if DM_POLICY == "off":
+                return
+            where = next((f"#{HOME_CHANNEL} on {g.name}" for g in bot.guilds if HOME_CHANNEL and g.get_member(msg.author.id)), "the server")
+            try:
+                await msg.reply(f"I only chat in DMs with my owner. Find me in {where} and I'm all yours there.", mention_author=False)
+            except Exception:  # noqa
+                pass
             return
         text = msg.content.replace(f"<@{bot.user.id}>", "").strip()
         if text.startswith("!"):           # !join / !leave / !voice are voice-bot commands (same Discord identity)
