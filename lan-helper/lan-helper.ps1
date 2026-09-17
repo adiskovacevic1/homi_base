@@ -162,7 +162,9 @@ function Query-Mdns([string]$type, [int]$timeoutSec) {
   foreach ($r in $recs) { if (-not $byName[$r.name]) { $byName[$r.name] = @{ name = $r.name; from = $r.from } }; $e = $byName[$r.name]
     switch ($r.type) { "SRV" { $e.host = $r.target; $e.port = $r.port } "TXT" { $e.txt = $r.txt } "A" { $e.ip = $r.ip } "PTR" { $e.instance = $r.target } } }
   $services = @()
-  foreach ($r in ($recs | Where-Object { $_.type -eq "PTR" })) {                 # ($Host is reserved in PowerShell, hence hostName)
+  # only PTRs for the type asked about: the multicast group carries every device's chatter, and a Chromecast query used
+  # to come back with Spotify Connect and AirPlay entries that the bot then listed as casting targets
+  foreach ($r in ($recs | Where-Object { $_.type -eq "PTR" -and $_.name -eq $type })) {   # ($Host is reserved in PowerShell, hence hostName)
     $inst = $byName[$r.target]; $hostName = if ($inst) { $inst.host } else { $null }; $a = if ($hostName -and $byName[$hostName]) { $byName[$hostName].ip } else { $null }
     $services += @{ instance = $r.target; type = $r.name; host = $hostName; port = $(if ($inst -and $inst.port) { [int]$inst.port } else { $null })
                     ip = $(if ($a) { $a } else { $r.from }); txt = @(if ($inst -and $inst.txt) { $inst.txt }) }
