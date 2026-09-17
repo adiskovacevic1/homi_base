@@ -3,43 +3,106 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>bot-lab setup</title>
+<title>homi setup</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=VT323&family=Share+Tech+Mono&display=swap" rel="stylesheet">
 <style>
-  :root { --bg:#0f1115; --card:#171a21; --line:#2a2f3a; --text:#e6e8ee; --muted:#9aa3b2; --ok:#3ecf8e; --bad:#ff6b6b; --warn:#f5b642; --accent:#6ea8fe; }
-  @media (prefers-color-scheme: light) { :root { --bg:#f5f6f8; --card:#fff; --line:#dde1e8; --text:#1b1f27; --muted:#5c6575; } }
-  * { box-sizing: border-box; }
-  body { margin:0; background:var(--bg); color:var(--text); font:15px/1.5 system-ui, -apple-system, Segoe UI, Roboto, sans-serif; }
-  main { max-width: 760px; margin: 0 auto; padding: 32px 16px 64px; }
-  h1 { font-size: 26px; margin: 0 0 4px; } h1 small { color: var(--muted); font-weight: 400; font-size: 15px; margin-left: 8px; }
-  p.lead { color: var(--muted); margin: 0 0 24px; }
-  section { background: var(--card); border: 1px solid var(--line); border-radius: 12px; padding: 20px; margin-bottom: 16px; }
-  h2 { font-size: 17px; margin: 0 0 4px; } .help { color: var(--muted); font-size: 13.5px; margin: 0 0 14px; } .help a { color: var(--accent); }
-  label { display:block; font-weight: 600; margin: 14px 0 6px; font-size: 14px; }
+  :root {
+    --bg:#050806; --bg2:#0a120c; --phos:#39ff7a; --phos-dim:#1f8a45; --phos-soft:#9dffc0; --amber:#ffb347; --red:#ff5c5c; --cyan:#5ce1ff;
+    --line:#164a2a; --ink:#c8ffd9; --muted:#6fbf8a; --panel:rgba(10,30,16,.75);
+    --mono:"Share Tech Mono","VT323",ui-monospace,Consolas,monospace; --display:"VT323","Share Tech Mono",ui-monospace,monospace;
+  }
+  * { box-sizing:border-box; }
+  html { background:var(--bg); }
+  body { margin:0; color:var(--ink); background:radial-gradient(ellipse at center, #0b1a10 0%, var(--bg) 70%); font:18px/1.45 var(--mono); min-height:100vh; overflow-x:hidden; }
+  /* the tube */
+  body::before { content:""; position:fixed; inset:0; pointer-events:none; z-index:50;
+    background:repeating-linear-gradient(0deg, rgba(0,0,0,.18) 0 1px, transparent 1px 3px); mix-blend-mode:multiply; }
+  body::after { content:""; position:fixed; inset:0; pointer-events:none; z-index:51; background:radial-gradient(ellipse at center, transparent 55%, rgba(0,0,0,.55) 100%); }
+  .flicker { animation:flicker 9s infinite; }
+  @keyframes flicker { 0%,97%,100%{opacity:1} 97.5%{opacity:.86} 98%{opacity:1} 98.6%{opacity:.92} }
+  main { max-width:820px; margin:0 auto; padding:28px 16px 80px; position:relative; z-index:1; }
+  /* header */
+  header { border:2px solid var(--line); border-radius:6px; padding:16px 20px; background:var(--panel); box-shadow:0 0 24px rgba(57,255,122,.08), inset 0 0 40px rgba(0,0,0,.4); margin-bottom:18px; }
+  pre.logo { margin:0 0 6px; font:26px/1 var(--display); color:var(--phos); text-shadow:0 0 8px rgba(57,255,122,.7), 0 0 20px rgba(57,255,122,.25); letter-spacing:1px; white-space:pre; overflow:hidden; }
+  @media (max-width:560px){ pre.logo{ font-size:17px; } }
+  .boot { margin:8px 0 0; padding:0; list-style:none; font-size:16px; color:var(--muted); min-height:5.6em; }
+  .boot li { opacity:0; transform:translateY(4px); animation:bootline .35s ease-out forwards; }
+  .boot li b { color:var(--phos-soft); font-weight:normal; }
+  .boot li .ok { color:var(--phos); } .boot li .warn { color:var(--amber); }
+  @keyframes bootline { to { opacity:1; transform:none; } }
+  .cursor::after { content:"█"; margin-left:2px; color:var(--phos); animation:blink 1s steps(1) infinite; }
+  @keyframes blink { 50% { opacity:0; } }
+  /* signal meter */
+  .meter { display:flex; align-items:center; gap:10px; margin-top:12px; font-size:15px; color:var(--muted); }
+  .meter .bars { display:flex; gap:4px; } .meter .bars i { width:14px; height:18px; border:1px solid var(--line); background:#0a1a10; transition:background .3s, box-shadow .3s; }
+  .meter .bars i.on { background:var(--phos); box-shadow:0 0 8px var(--phos); }
+  .meter .bars i.on:nth-child(n+5) { background:var(--phos-soft); }
+  /* panels */
+  section { border:1px solid var(--line); border-radius:6px; padding:18px 20px 20px; margin-bottom:14px; background:var(--panel); position:relative;
+    box-shadow:inset 0 0 30px rgba(0,0,0,.35); animation:panelin .5s ease-out both; }
+  section:nth-of-type(2){animation-delay:.05s} section:nth-of-type(3){animation-delay:.1s} section:nth-of-type(4){animation-delay:.15s} section:nth-of-type(5){animation-delay:.2s} section:nth-of-type(6){animation-delay:.25s}
+  @keyframes panelin { from { opacity:0; transform:translateY(10px); } to { opacity:1; transform:none; } }
+  section::before { content:attr(data-step); position:absolute; top:-11px; left:14px; background:var(--bg2); border:1px solid var(--line); color:var(--phos); font:15px var(--display); padding:1px 8px; letter-spacing:1px; }
+  h2 { margin:6px 0 4px; font:26px/1.1 var(--display); color:var(--phos); text-shadow:0 0 8px rgba(57,255,122,.5); letter-spacing:.5px; }
+  .help { color:var(--muted); font-size:15.5px; margin:0 0 12px; } .help a { color:var(--cyan); text-decoration:none; border-bottom:1px dotted var(--cyan); }
+  ol { padding-left:20px; margin:4px 0 8px; color:var(--muted); font-size:15.5px; } ol li{ margin:2px 0; } ol b{ color:var(--ink); font-weight:normal; }
+  label { display:block; margin:14px 0 6px; font-size:15px; color:var(--phos-soft); text-transform:uppercase; letter-spacing:1px; }
+  label::before { content:"> "; color:var(--phos); }
   .row { display:flex; gap:8px; align-items:center; }
-  input, select { width:100%; padding: 10px 12px; border-radius: 8px; border: 1px solid var(--line); background: var(--bg); color: var(--text); font: inherit; }
-  input:focus, select:focus { outline: 2px solid var(--accent); outline-offset: 1px; }
-  button { padding: 10px 14px; border-radius: 8px; border: 1px solid var(--line); background: var(--card); color: var(--text); font: inherit; cursor: pointer; white-space: nowrap; }
-  button.primary { background: var(--accent); border-color: var(--accent); color: #0b1220; font-weight: 700; padding: 12px 20px; font-size: 16px; }
-  button:disabled { opacity: .5; cursor: default; }
-  .status { font-size: 13.5px; margin-top: 6px; min-height: 1.4em; } .ok { color: var(--ok); } .bad { color: var(--bad); } .warn { color: var(--warn); } .muted { color: var(--muted); }
-  .identity { display:flex; align-items:center; gap:10px; margin-top: 8px; } .identity img { width: 40px; height: 40px; border-radius: 50%; background: var(--line); }
-  ol { padding-left: 20px; margin: 6px 0; color: var(--muted); font-size: 13.5px; } ol li { margin: 2px 0; }
+  input, select { width:100%; padding:10px 12px; border-radius:3px; border:1px solid var(--line); background:#030704; color:var(--phos); font:18px var(--mono); caret-color:var(--phos);
+    box-shadow:inset 0 0 12px rgba(0,0,0,.6); transition:border-color .2s, box-shadow .2s; }
+  input::placeholder { color:#2e6b44; }
+  input:focus, select:focus { outline:none; border-color:var(--phos); box-shadow:inset 0 0 12px rgba(0,0,0,.6), 0 0 10px rgba(57,255,122,.35); }
+  input.ok { border-color:var(--phos-dim); } input.bad { border-color:var(--red); animation:shake .25s; }
+  @keyframes shake { 25%{transform:translateX(-3px)} 75%{transform:translateX(3px)} }
+  select option { background:#030704; }
+  button { padding:10px 14px; border-radius:3px; border:1px solid var(--phos-dim); background:#06100a; color:var(--phos); font:16px var(--mono); cursor:pointer; white-space:nowrap; text-transform:uppercase; letter-spacing:1px; transition:background .15s, box-shadow .15s; }
+  button:hover { background:#0c2214; box-shadow:0 0 10px rgba(57,255,122,.3); }
+  button.primary { background:var(--phos); color:#031007; border-color:var(--phos); font:22px var(--display); padding:12px 26px; text-shadow:none; box-shadow:0 0 18px rgba(57,255,122,.45); }
+  button.primary:hover { background:var(--phos-soft); }
+  button.primary.armed { animation:pulse 1.4s ease-in-out infinite; }
+  @keyframes pulse { 50% { box-shadow:0 0 34px rgba(57,255,122,.85); } }
+  button:disabled { opacity:.45; cursor:default; animation:none; }
+  .status { font-size:15px; margin-top:6px; min-height:1.45em; color:var(--muted); }
+  .status.ok { color:var(--phos); text-shadow:0 0 6px rgba(57,255,122,.6); } .status.bad { color:var(--red); } .status.warn { color:var(--amber); } .status.muted { color:var(--muted); }
+  .status.ok::before { content:"[OK] "; } .status.bad::before { content:"[ERR] "; } .status.warn::before { content:"[??] "; }
+  .status.busy::after { content:"…"; animation:dots 1s steps(3) infinite; }
+  @keyframes dots { 0%{content:""} 33%{content:"."} 66%{content:".."} 100%{content:"..."} }
+  .identity { display:flex; align-items:center; gap:12px; margin-top:10px; padding:8px 10px; border:1px dashed var(--line); border-radius:4px; background:#050c07; }
+  .identity img { width:44px; height:44px; border-radius:4px; background:#0a1a10; filter:sepia(1) hue-rotate(80deg) saturate(2) contrast(1.1); image-rendering:pixelated; }
+  .identity b { color:var(--phos); font:22px var(--display); }
   .voices { display:flex; gap:8px; } .voices select { flex:1; }
-  #result { display:none; } #result.show { display:block; } #form.hide { display:none; }
-  .big { font-size: 17px; } .invite { display:inline-block; margin: 12px 0; padding: 12px 18px; background: var(--accent); color:#0b1220; border-radius: 8px; font-weight: 700; text-decoration: none; }
-  .problems { color: var(--bad); white-space: pre-line; margin-top: 10px; }
-  .kit-existing { margin-top: 8px; } .kit-existing label { display:flex; gap:8px; align-items:center; font-weight: 500; margin: 6px 0; } .kit-existing input { width:auto; }
-  code { background: var(--bg); padding: 1px 6px; border-radius: 5px; font-size: 13px; }
+  .kit-existing label { display:flex; gap:10px; align-items:center; text-transform:none; letter-spacing:0; color:var(--amber); } .kit-existing label::before{ content:""; } .kit-existing input { width:auto; accent-color:var(--phos); }
+  code { background:#030704; border:1px solid var(--line); padding:0 6px; border-radius:3px; color:var(--phos-soft); font-size:15px; }
+  .muted { color:var(--muted); }
+  .actions { display:flex; justify-content:space-between; align-items:center; gap:12px; margin-top:6px; }
+  .problems { color:var(--red); white-space:pre-line; margin-top:12px; font-size:15.5px; }
+  #result { display:none; } #result.show { display:block; animation:panelin .5s ease-out both; } #form.hide { display:none; }
+  .big { font-size:30px; }
+  .invite { display:inline-block; margin:12px 0; padding:12px 20px; background:var(--phos); color:#031007; border-radius:3px; font:22px var(--display); text-decoration:none; box-shadow:0 0 18px rgba(57,255,122,.45); }
+  .invite:hover { background:var(--phos-soft); }
+  .typed { overflow:hidden; white-space:nowrap; border-right:2px solid var(--phos); animation:typing 1.6s steps(40,end), blinkb .8s step-end infinite; }
+  @keyframes typing { from { width:0 } to { width:100% } } @keyframes blinkb { 50% { border-color:transparent } }
+  @media (prefers-reduced-motion: reduce) { *, *::before, *::after { animation:none !important; transition:none !important; } .boot li { opacity:1; transform:none; } }
 </style>
 </head>
-<body>
+<body class="flicker">
 <main>
-  <h1>bot-lab setup <small>a Discord bot that builds its own tools</small></h1>
-  <p class="lead">Everything you enter stays on this PC, in two small config files. Keys are only used to check they work.</p>
+  <header>
+<pre class="logo" aria-label="homi">
+ _   _  ___  __  __ ___
+| |_| |/ _ \|  \/  |_ _|   household bot · setup console
+|  _  | (_) | |\/| || |    v1 · builds its own tools
+|_| |_|\___/|_|  |_|___|
+</pre>
+    <ul class="boot" id="boot" aria-live="polite"></ul>
+    <div class="meter" aria-label="setup progress"><span>SIGNAL</span><div class="bars" id="bars"><i></i><i></i><i></i><i></i><i></i><i></i></div><span id="meter-text">0/6 checks</span></div>
+  </header>
 
   <form id="form" onsubmit="return false">
-  <section>
-    <h2>1. The Discord bot</h2>
+  <section data-step="STEP 1 / 5">
+    <h2>The Discord bot</h2>
     <p class="help">You need a bot of your own from the <a href="https://discord.com/developers/applications" target="_blank" rel="noopener">Discord developer portal</a>:</p>
     <ol>
       <li><b>New Application</b> → name it what people will see.</li>
@@ -52,8 +115,8 @@
     <div class="identity" id="identity" style="display:none"><img id="avatar" alt=""><div><b id="botname"></b><div class="muted" id="intent"></div></div></div>
   </section>
 
-  <section>
-    <h2>2. Who owns it</h2>
+  <section data-step="STEP 2 / 5">
+    <h2>Who owns it</h2>
     <p class="help">Only these people can give the bot new tools, a shell and installs. Everyone else can talk to it and use what exists.
       Your ID: Discord <b>Settings → Advanced → Developer Mode</b>, then right-click your name → <b>Copy User ID</b>.</p>
     <label for="owners">Your Discord user ID (more than one: comma-separated)</label>
@@ -61,20 +124,20 @@
     <div class="status" id="s-owners"></div>
     <label for="name">What the bot calls itself</label>
     <input id="name" placeholder="the house bot">
-    <label for="tz">Your timezone <span class="muted" style="font-weight:400">(for the daily ideas post and logs)</span></label>
+    <label for="tz">Your timezone <span class="muted" style="text-transform:none;letter-spacing:0">(for the daily ideas post and logs)</span></label>
     <input id="tz" placeholder="America/Chicago">
   </section>
 
-  <section>
-    <h2>3. The model</h2>
+  <section data-step="STEP 3 / 5">
+    <h2>The model</h2>
     <p class="help">An API key from <a href="https://console.anthropic.com" target="_blank" rel="noopener">console.anthropic.com</a>. The bot, and the tool builder, run on it.</p>
     <label for="anthropic">Anthropic API key</label>
     <div class="row"><input id="anthropic" type="password" autocomplete="off" spellcheck="false" placeholder="sk-ant-..."><button type="button" onclick="reveal('anthropic')">show</button></div>
     <div class="status" id="s-anthropic"></div>
   </section>
 
-  <section>
-    <h2>4. Voice <span class="muted" style="font-weight:400">(optional)</span></h2>
+  <section data-step="STEP 4 / 5">
+    <h2>Voice <span class="muted" style="font-size:18px">(optional)</span></h2>
     <p class="help">With an <a href="https://elevenlabs.io" target="_blank" rel="noopener">ElevenLabs</a> key the bot hears and speaks through their service. Without one it uses local speech engines, which work fine and cost nothing.</p>
     <label for="eleven">ElevenLabs API key</label>
     <div class="row"><input id="eleven" type="password" autocomplete="off" spellcheck="false" placeholder="leave empty to stay local"><button type="button" onclick="reveal('eleven')">show</button></div>
@@ -88,33 +151,33 @@
     <p class="help" style="margin-top:6px">It leaves when the channel empties or when someone says bye.</p>
   </section>
 
-  <section>
-    <h2>5. Tool kit</h2>
-    <p class="help">The bot's tools live in a folder named after this household, so several households can share this repo. A new kit starts with eight basic tools and grows.</p>
+  <section data-step="STEP 5 / 5">
+    <h2>Tool kit</h2>
+    <p class="help">The bot's tools live in a folder named after this household. A new kit starts with nine basic tools and grows as people ask for things.</p>
     <label for="kit">Kit name</label>
     <input id="kit" placeholder="lowercase letters, digits, dashes">
     <div class="status" id="s-kit"></div>
     <div class="kit-existing" id="kit-existing" style="display:none">
       <label><input type="checkbox" id="keep_kit"> Yes, that is this household's kit — keep using it</label>
     </div>
-    <label for="kit_remote">Back the kit up to a git repo <span class="muted" style="font-weight:400">(optional)</span></label>
+    <label for="kit_remote">Back the kit up to a git repo <span class="muted" style="text-transform:none;letter-spacing:0">(optional)</span></label>
     <input id="kit_remote" placeholder="https://github.com/you/my-bot-kit.git — a private repo of your own">
     <p class="help" style="margin-top:6px">The kit becomes a small git repo either way, so every tool the bot builds is a commit. With a URL here it also has somewhere to push; run <code>git push -u origin main</code> in the kit folder when you want it backed up.</p>
   </section>
 
-  <div class="row" style="justify-content:space-between">
+  <div class="actions">
     <!-- named saveAll/cancelSetup, not submit/cancel: inside a <form>, inline handlers see the form's own methods first -->
-    <button type="button" onclick="cancelSetup()">Cancel</button>
-    <button type="button" class="primary" id="submit" onclick="saveAll()">Save and start the bot</button>
+    <button type="button" onclick="cancelSetup()">abort</button>
+    <button type="button" class="primary" id="submit" onclick="saveAll()">▶ Initialize bot</button>
   </div>
   <div class="problems" id="problems"></div>
   </form>
 
-  <section id="result">
-    <h2 class="big">Saved. You can close this tab; the installer is starting the containers.</h2>
+  <section id="result" data-step="ONLINE">
+    <h2 class="big typed">Configuration written. Bringing the bot up.</h2>
     <div id="summary"></div>
-    <a id="invite" class="invite" target="_blank" rel="noopener" style="display:none">Invite the bot to your server →</a>
-    <p class="help">Then @mention the bot in a channel. It answers with what it has, and when a question needs something new it has a tool built and follows up.</p>
+    <a id="invite" class="invite" target="_blank" rel="noopener" style="display:none">▶ Invite the bot to your server</a>
+    <p class="help">You can close this tab; the installer is starting the containers. Then @mention the bot in a channel. It answers with what it has, and when a question needs something new it has a tool built and follows up.</p>
   </section>
 </main>
 
@@ -122,36 +185,71 @@
 const KEY = "__KEY__";
 const $ = (id) => document.getElementById(id);
 const api = (path, body) => fetch(path, { method: body ? "POST" : "GET", headers: { "content-type": "application/json", "X-Setup-Key": KEY }, body: body ? JSON.stringify(body) : undefined }).then(r => r.json());
-const status = (id, cls, text) => { const el = $("s-" + id); el.className = "status " + cls; el.textContent = text; };
 const debounce = (fn, ms) => { let t; return (...a) => { clearTimeout(t); t = setTimeout(() => fn(...a), ms); }; };
-let state = { kits: {}, discord: null, voices: [] };
+let state = { kits: {}, discord: null, voices: [], checks: {} };
 function reveal(id) { const i = $(id); i.type = i.type === "password" ? "text" : "password"; }
 
-async function init() {
+// status lines double as the progress meter: token, owners, anthropic, kit are required; eleven and tz are bonus bars
+const REQUIRED = ["token", "owners", "anthropic", "kit"];
+function status(id, cls, text) {
+  const el = $("s-" + id); el.className = "status " + cls; el.textContent = text;
+  const input = $(id); if (input) input.className = cls === "ok" ? "ok" : cls === "bad" ? "bad" : "";
+  state.checks[id] = cls === "ok"; meter();
+}
+function meter() {
+  const passed = ["token", "owners", "anthropic", "kit", "eleven", "tz"].filter(k => state.checks[k]).length;
+  [...$("bars").children].forEach((b, i) => b.classList.toggle("on", i < passed));
+  $("meter-text").textContent = `${passed}/6 checks`;
+  const ready = REQUIRED.every(k => state.checks[k]);
+  $("submit").classList.toggle("armed", ready);
+}
+
+// boot log: a few lines that type in, then the real state
+const bootLines = [
+  ["<b>homi</b> setup console", ""],
+  ["checking for an existing configuration", ""],
+];
+async function boot() {
+  const ul = $("boot");
+  const add = (html, delay) => new Promise(r => setTimeout(() => { const li = document.createElement("li"); li.innerHTML = html; ul.appendChild(li); r(li); }, delay));
+  await add("<b>homi</b> setup console · local only · nothing leaves this PC except key checks", 100);
+  const li = await add("scanning for an existing configuration<span class='cursor'></span>", 500);
   state = { ...state, ...(await api("/api/state")) };
+  li.innerHTML = state.config_exists
+    ? "<span class='warn'>[!!]</span> a configuration exists on this PC — saving replaces it (the tool kit is kept)"
+    : "<span class='ok'>[OK]</span> fresh install — no configuration yet";
+  const kits = Object.keys(state.kits);
+  await add(kits.length ? `<span class='ok'>[OK]</span> kits on disk: ${kits.map(k => `<b>${esc(k)}</b> (${state.kits[k]} tools)`).join(", ")}` : "<span class='ok'>[OK]</span> no tool kits yet — a new one starts with the nine basics", 400);
+  await add("<span class='ok'>[OK]</span> awaiting operator input<span class='cursor'></span>", 400);
+}
+
+async function init() {
+  boot();
   $("name").addEventListener("input", () => { if (!$("kit").dataset.touched) { $("kit").value = kitDefault($("name").value); checkKit(); } });
   $("kit").addEventListener("input", () => { $("kit").dataset.touched = "1"; checkKit(); });
   $("token").addEventListener("input", debounce(checkDiscord, 500));
   $("anthropic").addEventListener("input", debounce(checkAnthropic, 500));
   $("eleven").addEventListener("input", debounce(checkEleven, 500));
   $("owners").addEventListener("input", debounce(checkOwners, 600));
-  $("kit").value = kitDefault(""); checkKit();
+  $("tz").addEventListener("input", checkTz);
   try { $("tz").value = Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC"; } catch { $("tz").value = "UTC"; }   // the browser knows
-  if (state.config_exists) $("problems").textContent = "There is already a configuration on this PC. Saving will replace it (the tool kit is kept).";
+  state.checks.tz = /^[A-Za-z_]+(\/[A-Za-z0-9_+-]+)*$/.test($("tz").value);
+  setTimeout(() => { $("kit").value = kitDefault(""); checkKit(); }, 1200);   // after the boot log has fetched the kits
 }
 const kitDefault = (name) => (name || "home").toLowerCase().replace(/[^a-z0-9-]+/g, "-").replace(/^-+|-+$/g, "") || "home";
+function checkTz() { state.checks.tz = /^[A-Za-z_]+(\/[A-Za-z0-9_+-]+)*$/.test($("tz").value.trim()); $("tz").className = state.checks.tz ? "ok" : "bad"; meter(); }
 
 async function checkDiscord() {
   const token = $("token").value.trim(); state.discord = null; $("identity").style.display = "none";
   if (!token) return status("token", "muted", "");
   if (token.length < 50 || token.split(".").length !== 3) return status("token", "bad", "That does not look like a bot token: about 70 characters with two dots. If Ctrl+V did nothing, try right-click → Paste.");
-  status("token", "muted", "checking with Discord…");
+  status("token", "muted busy", "handshaking with Discord");
   const r = await api("/api/check/discord", { token });
   if (!r.ok) return status("token", r.offline ? "warn" : "bad", r.error || "rejected");
   state.discord = r;
-  status("token", "ok", "Token works.");
+  status("token", "ok", "Token accepted. Identity confirmed.");
   $("identity").style.display = "flex"; $("avatar").src = r.avatar || "data:image/gif;base64,R0lGODlhAQABAAAAACw="; $("botname").textContent = r.name;
-  $("intent").className = r.message_content ? "ok" : "bad";
+  $("intent").className = r.message_content ? "status ok" : "status bad";
   $("intent").textContent = r.message_content ? "Message Content Intent is on." : "Message Content Intent is OFF — turn it on in the Bot tab or the bot will not hear messages.";
   if ($("owners").value.trim()) checkOwners();
 }
@@ -159,7 +257,8 @@ async function checkOwners() {
   const ids = $("owners").value.split(",").map(s => s.trim()).filter(Boolean);
   if (!ids.length) return status("owners", "muted", "");
   if (!ids.every(i => /^\d{15,22}$/.test(i))) return status("owners", "bad", "User IDs are 17–20 digit numbers.");
-  if (!state.discord) return status("owners", "muted", ids.length + " ID(s). Enter a working token above and I will look the names up.");
+  if (!state.discord) return status("owners", "warn", ids.length + " ID(s). Enter a working token above and I will look the names up.");
+  status("owners", "muted busy", "resolving names");
   const r = await api("/api/check/owners", { token: $("token").value.trim(), ids });
   if (!Array.isArray(r)) return status("owners", "warn", "could not look them up");
   const bad = r.filter(x => !x.ok);
@@ -169,18 +268,18 @@ async function checkAnthropic() {
   const key = $("anthropic").value.trim();
   if (!key) return status("anthropic", "muted", "");
   if (!key.startsWith("sk-ant-")) return status("anthropic", "bad", "Anthropic keys start with sk-ant-");
-  status("anthropic", "muted", "checking…");
+  status("anthropic", "muted busy", "pinging the model API");
   const r = await api("/api/check/anthropic", { key });
-  status("anthropic", r.ok ? "ok" : (r.offline ? "warn" : "bad"), r.ok ? "Key works." : r.error);
+  status("anthropic", r.ok ? "ok" : (r.offline ? "warn" : "bad"), r.ok ? "Key accepted. Model link up." : r.error);
 }
 async function checkEleven() {
   const key = $("eleven").value.trim(); $("voicebox").style.display = "none";
   if (!key) return status("eleven", "muted", "");
-  status("eleven", "muted", "checking…");
+  status("eleven", "muted busy", "fetching voices");
   const r = await api("/api/check/eleven", { key });
   if (!r.ok) return status("eleven", r.offline ? "warn" : "bad", r.error);
   state.voices = r.voices || [];
-  status("eleven", "ok", `Key works. ${state.voices.length} voices on the account.`);
+  status("eleven", "ok", `Key accepted. ${state.voices.length} voices on the account.`);
   const sel = $("voice"); sel.innerHTML = "";
   for (const v of state.voices) { const o = document.createElement("option"); o.value = v.id; o.textContent = `${v.name}${v.labels ? " — " + v.labels : ""}`; sel.appendChild(o); }
   if (!state.voices.length) { const o = document.createElement("option"); o.value = ""; o.textContent = "default voice"; sel.appendChild(o); }
@@ -197,22 +296,23 @@ function checkKit() {
   const others = Object.keys(state.kits).filter(k => k !== kit);
   status("kit", "ok", `New kit: starts with the basic tools.${others.length ? " Other kits here: " + others.join(", ") : ""}`);
 }
+$("keep_kit")?.addEventListener("change", () => { if ($("keep_kit").checked) status("kit", "ok", `Keeping kits/${$("kit").value.trim()}.`); else checkKit(); });
 async function saveAll() {
-  $("problems").textContent = ""; $("submit").disabled = true; $("submit").textContent = "Saving…";
+  $("problems").textContent = ""; $("submit").disabled = true; $("submit").textContent = "writing…";
   const body = { token: $("token").value.trim(), anthropic: $("anthropic").value.trim(), owners: $("owners").value.trim(), name: $("name").value.trim(),
                  eleven: $("eleven").value.trim(), voice: $("eleven").value.trim() ? $("voice").value : "", auto: $("auto").value.trim(), kit: $("kit").value.trim(),
                  kit_remote: $("kit_remote").value.trim(), tz: $("tz").value.trim(), app_id: state.discord?.app_id || "", keep_kit: $("keep_kit").checked };
   const r = await api("/api/write", body);
-  $("submit").disabled = false; $("submit").textContent = "Save and start the bot";
+  $("submit").disabled = false; $("submit").textContent = "▶ Initialize bot";
   if (!r.ok) { $("problems").textContent = (r.problems || [r.error || "something went wrong"]).join("\n"); return; }
-  $("form").classList.add("hide"); $("result").classList.add("show");
+  $("form").classList.add("hide"); $("result").classList.add("show"); window.scrollTo({ top: 0, behavior: "smooth" });
   $("summary").innerHTML = `<p>Bot: <b>${esc(state.discord?.name || r.name)}</b> · owner(s): <code>${esc(r.owners)}</code><br>
-    Tool kit: <code>bots/example-bot/kits/${esc(r.kit)}</code> ${r.kit_tools ? `(${r.kit_tools} tools)` : "(new — the eight starter tools are added on first start)"} — ${esc(r.kit_repo)}<br>
+    Tool kit: <code>bots/example-bot/kits/${esc(r.kit)}</code> ${r.kit_tools ? `(${r.kit_tools} tools)` : "(new — the starter tools are added on first start)"} — ${esc(r.kit_repo)}<br>
     Speech: ${esc(r.speech)} · voice channel auto-join: ${esc(r.auto_join)}<br>
     Files written: <code>${r.files.map(esc).join("</code>, <code>")}</code></p>`;
   if (r.invite) { $("invite").href = r.invite; $("invite").style.display = "inline-block"; }
 }
-async function cancelSetup() { if (!confirm("Stop the setup without saving?")) return; await api("/api/cancel", {}); document.body.innerHTML = "<main><h1>Setup cancelled.</h1><p class='lead'>Nothing was written. Run the installer again when you are ready.</p></main>"; }
+async function cancelSetup() { if (!confirm("Stop the setup without saving?")) return; await api("/api/cancel", {}); document.body.innerHTML = "<main><header><pre class='logo'>SETUP ABORTED</pre><p class='help'>Nothing was written. Run the installer again when you are ready.<span class='cursor'></span></p></header></main>"; }
 const esc = (s) => String(s ?? "").replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 init();
 </script>
