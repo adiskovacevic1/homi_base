@@ -56,6 +56,36 @@ async def check_discord(token):
                 "invite": cfgfile.invite_url(app.get("id", "")) if st == 200 else ""}
 
 
+async def check_guilds(token):
+    """Servers the bot has been invited to - the setup page polls this after showing the invite link."""
+    async with aiohttp.ClientSession(headers={"Authorization": f"Bot {token}"}) as s:
+        st, guilds = await fetch_json(s, "GET", f"{DISCORD}/users/@me/guilds")
+        if st != 200:
+            return {"ok": False, "error": f"Discord answered {st}", "guilds": []}
+        return {"ok": True, "guilds": [{"id": g["id"], "name": g["name"],
+                                        "icon": f"https://cdn.discordapp.com/icons/{g['id']}/{g['icon']}.png?size=64" if g.get("icon") else ""}
+                                       for g in guilds]}
+
+
+async def search_members(token, guild_id, query):
+    """Members of a server whose name starts with `query`, via the bot: how the owner picks themselves without knowing their id."""
+    async with aiohttp.ClientSession(headers={"Authorization": f"Bot {token}"}) as s:
+        st, members = await fetch_json(s, "GET", f"{DISCORD}/guilds/{guild_id}/members/search", params={"query": query, "limit": 10})
+        if st != 200:
+            msg = (members.get("message") if isinstance(members, dict) else "") or f"Discord answered {st}"
+            return {"ok": False, "error": msg, "members": []}
+        out = []
+        for m in members:
+            u = m.get("user") or {}
+            if u.get("bot"):
+                continue
+            avatar = (f"https://cdn.discordapp.com/avatars/{u['id']}/{u['avatar']}.png?size=64" if u.get("avatar")
+                      else f"https://cdn.discordapp.com/embed/avatars/{int(u.get('id', '0')) >> 22 & 5}.png")
+            out.append({"id": u.get("id"), "name": m.get("nick") or u.get("global_name") or u.get("username"),
+                        "username": u.get("username"), "avatar": avatar})
+        return {"ok": True, "members": out}
+
+
 async def check_owners(token, ids):
     out = []
     async with aiohttp.ClientSession(headers={"Authorization": f"Bot {token}"}) as s:
@@ -115,8 +145,19 @@ async def check(req):
         fake = {"discord": {"ok": True, "name": "test-bot", "id": "0", "avatar": "", "app_id": "123456789012345678", "message_content": True,
                             "invite": cfgfile.invite_url("123456789012345678")},
                 "anthropic": {"ok": True}, "eleven": {"ok": True, "voices": []},
-                "owners": [{"id": i, "ok": True, "name": "tester"} for i in body.get("ids", [])]}
+                "owners": [{"id": i, "ok": True, "name": "tester"} for i in body.get("ids", [])],
+                "guilds": {"ok": True, "guilds": [{"id": "1", "name": "Test Server", "icon": ""}]},
+                "members": {"ok": True, "members": [{"id": "111111111111111111", "name": "Tester", "username": "tester", "avatar": ""},
+                                                     {"id": "222222222222222222", "name": "Testina", "username": "testina", "avatar": ""}]
+                            if body.get("query") else []}}
         return web.json_response(fake[what])
+    if what == "guilds":
+        return web.json_response(await check_guilds(cfgfile.clean(body.get("token"))))
+    if what == "members":
+        gid, q = cfgfile.clean(body.get("guild_id")), cfgfile.clean(body.get("query"))[:40]
+        if not gid.isdigit() or not q:
+            return web.json_response({"ok": False, "error": "guild_id and query required", "members": []})
+        return web.json_response(await search_members(cfgfile.clean(body.get("token")), gid, q))
     if what == "discord":
         return web.json_response(await check_discord(cfgfile.clean(body.get("token"))))
     if what == "anthropic":

@@ -73,6 +73,12 @@
   .identity img { width:44px; height:44px; border-radius:4px; background:#0a1a10; filter:sepia(1) hue-rotate(80deg) saturate(2) contrast(1.1); image-rendering:pixelated; }
   .identity b { color:var(--phos); font:22px var(--display); }
   .voices { display:flex; gap:8px; } .voices select { flex:1; }
+  .people { list-style:none; margin:6px 0 0; padding:0; display:flex; flex-wrap:wrap; gap:8px; }
+  .people li { display:flex; align-items:center; gap:8px; padding:6px 10px; border:1px solid var(--line); border-radius:4px; background:#050c07; cursor:pointer; transition:border-color .15s, box-shadow .15s; animation:panelin .25s ease-out both; }
+  .people li:hover { border-color:var(--phos); box-shadow:0 0 10px rgba(57,255,122,.3); }
+  .people li.picked { border-color:var(--phos); background:#0a2214; }
+  .people img { width:28px; height:28px; border-radius:50%; background:#0a1a10; }
+  .people small { color:var(--muted); }
   .kit-existing label { display:flex; gap:10px; align-items:center; text-transform:none; letter-spacing:0; color:var(--amber); } .kit-existing label::before{ content:""; } .kit-existing input { width:auto; accent-color:var(--phos); }
   code { background:#030704; border:1px solid var(--line); padding:0 6px; border-radius:3px; color:var(--phos-soft); font-size:15px; }
   .muted { color:var(--muted); }
@@ -113,13 +119,24 @@
     <div class="row"><input id="token" type="password" autocomplete="off" spellcheck="false" placeholder="paste the token"><button type="button" onclick="reveal('token')">show</button></div>
     <div class="status" id="s-token"></div>
     <div class="identity" id="identity" style="display:none"><img id="avatar" alt=""><div><b id="botname"></b><div class="muted" id="intent"></div></div></div>
+    <div id="invitebox" style="display:none">
+      <label>Now put it in your server</label>
+      <div class="row" style="flex-wrap:wrap">
+        <a id="invite-early" class="invite" target="_blank" rel="noopener" style="margin:0">▶ Invite the bot</a>
+        <span class="status busy" id="s-guild" style="margin:0">waiting for the bot to appear in a server</span>
+      </div>
+      <div class="row" id="guildpick" style="display:none; margin-top:8px"><label for="guild" style="margin:0; white-space:nowrap">Server</label><select id="guild"></select></div>
+    </div>
   </section>
 
   <section data-step="STEP 2 / 5">
     <h2>Who owns it</h2>
-    <p class="help">Only these people can give the bot new tools, a shell and installs. Everyone else can talk to it and use what exists.
-      Your ID: Discord <b>Settings → Advanced → Developer Mode</b>, then right-click your name → <b>Copy User ID</b>.</p>
-    <label for="owners">Your Discord user ID (more than one: comma-separated)</label>
+    <p class="help">Only these people can give the bot new tools, a shell and installs. Everyone else can talk to it and use what exists.</p>
+    <label for="who">Find yourself in the server</label>
+    <input id="who" placeholder="type your Discord name once the bot is in your server" autocomplete="off">
+    <div class="status" id="s-who"></div>
+    <ul class="people" id="people"></ul>
+    <label for="owners">Owner user IDs <span class="muted" style="text-transform:none;letter-spacing:0">(filled by picking above; or paste IDs, comma-separated)</span></label>
     <input id="owners" inputmode="numeric" placeholder="123456789012345678">
     <div class="status" id="s-owners"></div>
     <label for="name">What the bot calls itself</label>
@@ -231,6 +248,8 @@ async function init() {
   $("anthropic").addEventListener("input", debounce(checkAnthropic, 500));
   $("eleven").addEventListener("input", debounce(checkEleven, 500));
   $("owners").addEventListener("input", debounce(checkOwners, 600));
+  $("who").addEventListener("input", debounce(searchMembers, 400));
+  $("guild").addEventListener("change", searchMembers);
   $("tz").addEventListener("input", checkTz);
   try { $("tz").value = Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC"; } catch { $("tz").value = "UTC"; }   // the browser knows
   state.checks.tz = /^[A-Za-z_]+(\/[A-Za-z0-9_+-]+)*$/.test($("tz").value);
@@ -251,12 +270,54 @@ async function checkDiscord() {
   $("identity").style.display = "flex"; $("avatar").src = r.avatar || "data:image/gif;base64,R0lGODlhAQABAAAAACw="; $("botname").textContent = r.name;
   $("intent").className = r.message_content ? "status ok" : "status bad";
   $("intent").textContent = r.message_content ? "Message Content Intent is on." : "Message Content Intent is OFF — turn it on in the Bot tab or the bot will not hear messages.";
+  if (r.invite) { $("invite-early").href = r.invite; $("invitebox").style.display = "block"; pollGuilds(); }
   if ($("owners").value.trim()) checkOwners();
+}
+
+// after the invite: watch for the bot to show up in a server, then member search can work
+let guildTimer;
+async function pollGuilds() {
+  clearTimeout(guildTimer);
+  const r = await api("/api/check/guilds", { token: $("token").value.trim() });
+  const guilds = r.guilds || [];
+  if (!guilds.length) { $("s-guild").className = "status busy"; $("s-guild").textContent = "waiting for the bot to appear in a server"; guildTimer = setTimeout(pollGuilds, 3000); return; }
+  $("s-guild").className = "status ok"; $("s-guild").textContent = guilds.length === 1 ? `in ${guilds[0].name}` : `in ${guilds.length} servers`;
+  const sel = $("guild"); const prev = sel.value; sel.innerHTML = "";
+  for (const g of guilds) { const o = document.createElement("option"); o.value = g.id; o.textContent = g.name; sel.appendChild(o); }
+  if (prev) sel.value = prev;
+  $("guildpick").style.display = guilds.length > 1 ? "flex" : "none";
+  state.guilds = guilds;
+  if (!$("owners").value.trim()) status("who", "muted", "Type your name to find yourself.");
+  if ($("who").value.trim()) searchMembers();
+}
+async function searchMembers() {
+  const q = $("who").value.trim(); const gid = $("guild").value || state.guilds?.[0]?.id;
+  $("people").innerHTML = "";
+  if (!q) return status("who", "muted", state.guilds?.length ? "Type your name to find yourself." : "");
+  if (!state.discord) return status("who", "warn", "Enter a working bot token first.");
+  if (!gid) return status("who", "warn", "Invite the bot to your server first (button above), then search.");
+  status("who", "muted busy", "searching");
+  const r = await api("/api/check/members", { token: $("token").value.trim(), guild_id: gid, query: q });
+  if (!r.ok) return status("who", "bad", r.error || "search failed");
+  if (!r.members.length) return status("who", "warn", `nobody in the server matches "${q}" — the search matches the start of a name`);
+  status("who", "ok", `${r.members.length} match${r.members.length > 1 ? "es" : ""} — click yours`);
+  const chosen = new Set($("owners").value.split(",").map(s => s.trim()));
+  for (const m of r.members) {
+    const li = document.createElement("li"); li.className = chosen.has(m.id) ? "picked" : "";
+    li.innerHTML = `<img src="${esc(m.avatar || "data:image/gif;base64,R0lGODlhAQABAAAAACw=")}" alt=""><span>${esc(m.name)} <small>@${esc(m.username)}</small></span>`;
+    li.onclick = () => pickMember(m, li); $("people").appendChild(li);
+  }
+}
+function pickMember(m, li) {
+  const ids = $("owners").value.split(",").map(s => s.trim()).filter(Boolean);
+  if (ids.includes(m.id)) { $("owners").value = ids.filter(i => i !== m.id).join(", "); li.classList.remove("picked"); }
+  else { ids.push(m.id); $("owners").value = ids.join(", "); li.classList.add("picked"); }
+  checkOwners();
 }
 async function checkOwners() {
   const ids = $("owners").value.split(",").map(s => s.trim()).filter(Boolean);
   if (!ids.length) return status("owners", "muted", "");
-  if (!ids.every(i => /^\d{15,22}$/.test(i))) return status("owners", "bad", "User IDs are 17–20 digit numbers.");
+  if (!ids.every(i => /^\d{15,22}$/.test(i))) return status("owners", "bad", "User IDs are 17–20 digit numbers. Easier: find yourself by name above.");
   if (!state.discord) return status("owners", "warn", ids.length + " ID(s). Enter a working token above and I will look the names up.");
   status("owners", "muted busy", "resolving names");
   const r = await api("/api/check/owners", { token: $("token").value.trim(), ids });

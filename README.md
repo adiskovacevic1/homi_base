@@ -22,11 +22,12 @@ cd homi_base
 
 It builds the three images, then opens a setup page in your browser (served from the dev container on
 `localhost:8792`, one-time key in the link, gone once you save). The page asks for the bot token, your API key(s),
-your Discord user ID, a name, optional ElevenLabs, and a kit name, and checks each as you type: the token is
-tried against Discord and shows the bot's name and whether **Message Content Intent** is on, the one step people
-miss and without which the bot hears nothing; the Anthropic key is tried; an ElevenLabs key turns the voice field
-into a list of your voices with previews; owner IDs resolve to usernames. Saving writes the `.env` files, shows
-the invite link, and the installer starts everything. `./install.sh --terminal` (or `-Terminal` in PowerShell)
+who owns the bot, a name, optional ElevenLabs, and a kit name, and checks each as you type: the token is tried
+against Discord and shows the bot's name and whether **Message Content Intent** is on, the one step people miss
+and without which the bot hears nothing. As soon as the token works it hands you the invite link; once the bot is
+in your server you find yourself by name from the server's members and click, no user ID hunting (pasting IDs
+still works). The Anthropic key is tried; an ElevenLabs key turns the voice field into a list of your voices with
+previews. Saving writes the `.env` files and the installer starts everything. `./install.sh --terminal` (or `-Terminal` in PowerShell)
 asks the same questions in the terminal instead, for a machine without a browser; there, paste with a right-click,
 since Ctrl+V does not paste into a Docker terminal on Windows. The bot starts with nine generic tools (weather, web fetch, YouTube
 search, memory, file handling, and Discord's own API scoped to reading, posting and the bot's own messages) from
