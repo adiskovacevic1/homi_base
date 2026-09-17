@@ -46,6 +46,8 @@ from pathlib import Path
 import anthropic
 import httpx
 
+import brain                                   # the conversation model behind one interface: Claude, OpenAI or DeepSeek
+
 MODEL = os.environ.get("BOT_MODEL", "claude-opus-5")
 SYSTEM = os.environ.get("BOT_SYSTEM", "You are a concise, friendly assistant living in a Discord server. Answer briefly.")
 HISTORY_TURNS = 10          # user+assistant messages kept per channel
@@ -184,7 +186,9 @@ You can send files: have a tool save its output under /data (an image, a chart, 
 call attach_file with the path; it is uploaded with your reply. Never say you cannot upload or attach files.
 Once a day you post a few tool ideas drawn from the day's conversation. Owners can turn that off or on, move it,
 or ask for it now through your `settings` tool. "build 2" after such a post means: build idea 2 - you will be
-given its details.
+given its details. The same `settings` tool switches which model answers (brain_provider: claude, openai or
+deepseek, and brain_model); when an owner asks to use a different model, do that, and if its key is missing relay
+the console link you get back.
 
 Writing one:
 - `code` must define a top-level `run(**kwargs)` taking your input_schema's properties and *returning* a
@@ -330,11 +334,13 @@ META_TOOLS.append({
 META_TOOLS.append({
     "name": "settings",
     "description": "Owner-only switches for the bot itself. action 'get' shows them; 'set' changes one: daily_ideas (true/false - the "
-                   "daily post proposing new tools), ideas_at (HH:MM local), ideas_channel (name or id; empty = the day's busiest channel); "
-                   "'run_ideas' posts the daily ideas now. Use when someone asks to turn the daily ideas on or off, move them, or see them now.",
+                   "daily post proposing new tools), ideas_at (HH:MM local), ideas_channel (name or id; empty = the day's busiest channel), "
+                   "brain_provider (claude, openai or deepseek - which model answers, applies to the next message; if its key is missing "
+                   "you get a console link to relay and Claude keeps answering meanwhile), brain_model (a model id for that provider); "
+                   "'run_ideas' posts the daily ideas now. Use when an owner asks to switch the model, or to turn the daily ideas on or off.",
     "input_schema": {"type": "object", "properties": {
         "action": {"type": "string", "enum": ["get", "set", "run_ideas"]},
-        "key": {"type": "string", "enum": ["daily_ideas", "ideas_at", "ideas_channel"]},
+        "key": {"type": "string", "enum": ["daily_ideas", "ideas_at", "ideas_channel", "brain_provider", "brain_model"]},
         "value": {"type": "string"}},
         "required": ["action"]},
 })
@@ -360,19 +366,41 @@ def attach_file(path, note=None, ctx=None):
     ctx["files"].append((str(p), (note or "").strip()[:200]))
     return f"attached {p.name} ({size / 1024:.0f} KB); it goes out with your reply - mention it in one line, do not paste its contents"
 
-_client, _client_key = None, None
 
 
-def get_client():
-    """The Anthropic client, built from the key in the vault (env as fallback) and rebuilt whenever that key changes, so a
-    key changed in the console applies to the next message with no restart. Created on first use, so the container can
-    start (and idle) without a key configured."""
-    global _client, _client_key
-    key = secret_env(["ANTHROPIC_API_KEY"]).get("ANTHROPIC_API_KEY")
-    if _client is None or key != _client_key:
-        _client = anthropic.Anthropic(api_key=key) if key else anthropic.Anthropic()
-        _client_key = key
-    return _client
+BRAIN_PROVIDER = os.environ.get("BRAIN_PROVIDER", "claude").lower()      # default; settings.json (the `settings` tool, the console) overrides live
+_key_nag = {}                                                             # provider key -> last time the bot nagged for it
+
+
+def brain_settings():
+    """Which model answers: settings.json over env. Returns (provider, model)."""
+    s = settings_load()
+    provider = str(s.get("brain_provider") or BRAIN_PROVIDER).lower()
+    if provider not in brain.PROVIDERS:
+        provider = "claude"
+    default_model = MODEL if provider == "claude" else brain.PROVIDERS[provider]["model"]
+    return provider, str(s.get("brain_model") or default_model)
+
+
+def brain_complete(system, messages, tools, effort="medium"):
+    """One model call through brain.py with the configured provider. If that provider's key is not in the vault yet, Claude
+    answers instead (when its key exists) and the result carries a `nag`: the key-needed text to show the person, at most
+    once every 30 minutes, so the bot never goes silent over a switch made before the key arrived."""
+    provider, model = brain_settings()
+    keys = secret_env([p["key"] for p in brain.PROVIDERS.values()])
+    try:
+        turn = brain.complete(system, messages, tools, effort, provider, model, keys)
+        turn.nag = None
+        return turn
+    except brain.KeyMissing as e:
+        if provider == "claude" or not keys.get("ANTHROPIC_API_KEY"):
+            raise
+        turn = brain.complete(system, messages, tools, effort, "claude", MODEL, keys)
+        turn.nag = None
+        if time.time() - _key_nag.get(e.key, 0) > 1800:
+            _key_nag[e.key] = time.time()
+            turn.nag = key_needed([e.key], f"the brain is set to {brain.PROVIDERS[provider]['label']} but its key is not in the vault; Claude is answering meanwhile")
+        return turn
 
 
 class ToolError(Exception):
@@ -747,7 +775,12 @@ def ideas_settings():
 def settings_tool(action="get", key=None, value=None, ctx=None):
     """Meta-tool, owner-only: the bot's own switches. get / set <key> <value> / run_ideas."""
     if action == "get":
-        return {**ideas_settings(), "note": "daily_ideas true/false; ideas_at HH:MM local; ideas_channel name or id (empty = busiest); run_ideas posts now"}
+        provider, model = brain_settings()
+        return {**ideas_settings(), "brain_provider": provider, "brain_model": model,
+                "brains": {p: {"label": d["label"], "default_model": d["model"], "key": d["key"],
+                               "key_present": bool(secret_env([d["key"]]).get(d["key"]))} for p, d in brain.PROVIDERS.items()},
+                "note": "daily_ideas true/false; ideas_at HH:MM local; ideas_channel name or id (empty = busiest); run_ideas posts now; "
+                        "brain_provider claude|openai|deepseek and brain_model switch the model that answers, live"}
     if action == "run_ideas":
         if not (ctx or {}).get("ideas_now"):
             raise ToolError("cannot run the review from here (no Discord connection in this context)")
@@ -767,10 +800,25 @@ def settings_tool(action="get", key=None, value=None, ctx=None):
         s["ideas_at"] = v
     elif key == "ideas_channel":
         s["ideas_channel"] = v.lstrip("#").lower()
+    elif key == "brain_provider":
+        if v.lower() not in brain.PROVIDERS:
+            raise ToolError(f"brain_provider must be one of {', '.join(brain.PROVIDERS)}")
+        s["brain_provider"] = v.lower()
+        s.pop("brain_model", None)                           # a new provider starts on its default model
+        settings_save(s)
+        need = brain.PROVIDERS[v.lower()]["key"]
+        out = {"ok": True, "brain_provider": v.lower(), "brain_model": brain_settings()[1]}
+        if not secret_env([need]).get(need):
+            out["reply"] = key_needed([need], f"you switched the brain to {brain.PROVIDERS[v.lower()]['label']}; until it is added I keep answering with Claude")
+        return out
+    elif key == "brain_model":
+        if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._:-]{1,80}", v):
+            raise ToolError("brain_model is a model id like claude-opus-5, gpt-5 or deepseek-chat")
+        s["brain_model"] = v
     else:
-        raise ToolError("key must be daily_ideas, ideas_at or ideas_channel")
+        raise ToolError("key must be daily_ideas, ideas_at, ideas_channel, brain_provider or brain_model")
     settings_save(s)
-    return {"ok": True, **ideas_settings()}
+    return {"ok": True, **ideas_settings(), "brain_provider": brain_settings()[0], "brain_model": brain_settings()[1]}
 
 
 async def gather_day(bot, since):
@@ -822,9 +870,7 @@ def propose_ideas(transcript):
     prompt = (f"Tools you already have:\n{kit or '(none yet)'}\n\n"
               + (f"Previously proposed this week (skip unless there is new evidence): {', '.join(prev)}\n\n" if prev else "")
               + f"Conversation of the last {IDEAS_LOOKBACK_H} hours (YOU are your own messages):\n\n{transcript[-IDEAS_MAX_CHARS:]}")
-    r = get_client().messages.create(model=MODEL, max_tokens=6000, system=IDEAS_SYSTEM,
-                                     messages=[{"role": "user", "content": prompt}], output_config={"effort": "medium"})
-    text = "".join(b.text for b in r.content if b.type == "text").strip()
+    text = brain_complete(IDEAS_SYSTEM, [{"role": "user", "content": prompt}], [], "medium").text.strip()
     text = re.sub(r"^```(?:json)?\s*|\s*```$", "", text)
     try:
         data = json.loads(text)
@@ -1056,36 +1102,29 @@ def ask(history, trusted=True, system_extra="", ctx=None):
     """Claude, plus as many tool rounds as the answer needs. Returns (reply, notes).
     Opus 5 thinks adaptively by default; medium effort keeps chat replies quick and cheap.
     Server-side fallbacks re-run a safety-declined request on another model instead of returning nothing."""
+    import types
     messages = [dict(m) for m in history]
-    notes = []
+    notes, nag = [], None
     for _ in range(MAX_STEPS):
         try:
-            response = get_client().beta.messages.create(
-                model=MODEL,
-                max_tokens=16000,
-                system=SYSTEM + TOOL_GUIDE + system_extra,
-                messages=messages,
-                tools=tool_specs(),
-                output_config={"effort": "medium"},
-                betas=["server-side-fallback-2026-07-01"],
-                fallbacks="default",
-            )
-        except anthropic.AuthenticationError:               # the brain's own key: no model to phrase it, so the bot says it itself
-            return key_needed(["ANTHROPIC_API_KEY"], "the model API rejected the key I have"), notes
-        if response.stop_reason == "refusal":
+            turn = brain_complete(SYSTEM + TOOL_GUIDE + system_extra, messages, tool_specs(), "medium")
+        except brain.KeyMissing as e:                        # the brain's own key: no model to phrase it, so the bot says it itself
+            return key_needed([e.key], f"the brain is set to {brain.PROVIDERS[e.provider]['label']} and that key is not in the vault"), notes
+        except brain.KeyRejected as e:
+            return key_needed([e.key], f"{brain.PROVIDERS[e.provider]['label']} rejected the key I have"), notes
+        nag = nag or turn.nag
+        if turn.stop == "refusal":
             return "I can't help with that one.", notes
-        if response.stop_reason != "tool_use":
-            text = "".join(b.text for b in response.content if b.type == "text").strip()
-            return text or "…", notes
-        # The assistant turn goes back verbatim: it carries the thinking blocks with the tool calls.
-        messages.append({"role": "assistant", "content": response.content})
+        if turn.stop != "tool_use":
+            text = turn.text or "…"
+            return (f"{nag}\n\n{text}" if nag else text), notes
+        messages.append(brain.assistant_message(turn))      # Claude: verbatim, thinking blocks and all; others: the same as blocks
         results = []
-        for block in response.content:
-            if block.type == "tool_use":
-                result, note = dispatch(block, trusted, ctx)
-                results.append(result)
-                notes.append(note)
-        messages.append({"role": "user", "content": results})   # all results in one message
+        for call in turn.tool_calls:
+            result, note = dispatch(types.SimpleNamespace(**call), trusted, ctx)
+            results.append(result)
+            notes.append(note)
+        messages.append(brain.tool_results_message(results))   # all results in one message
     return "I kept reaching for tools and ran out of steps — try narrowing the question.", notes
 
 
@@ -1329,7 +1368,7 @@ def run_discord(token):
 
     @bot.event
     async def on_ready():
-        print(f"online as {bot.user} | model={MODEL} | tools={len(tool_specs()) - len(META_TOOLS)}"
+        print(f"online as {bot.user} | brain={brain_settings()[0]}/{brain_settings()[1]} | tools={len(tool_specs()) - len(META_TOOLS)}"
               f" | no mention needed in: {', '.join(sorted(OPEN_CHANNELS)) or 'nowhere'}", flush=True)
         if not getattr(bot, "_brain_started", False):
             bot._brain_started = True

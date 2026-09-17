@@ -157,6 +157,16 @@ Reconfiguring with the installer keeps the passphrase and backs up the vault bes
 the passphrase existed (a random `VAULT_KEY`) keep working and are re-encrypted under the passphrase the next time
 setup runs.
 
+### The brain is a setting
+
+The model that answers is a switch, not a build: **Claude** (`claude-opus-5`, the default), **OpenAI** (`gpt-5`) or
+**DeepSeek** (`deepseek-chat`), each with its key in the vault under `ANTHROPIC_API_KEY`, `OPENAI_API_KEY` or
+`DEEPSEEK_API_KEY`. An owner switches in chat ("use deepseek from now on" reaches the `settings` tool) or in the
+console's live settings, and the next message is answered by the new model with the same tools, memory and history.
+If the new provider's key is not in the vault yet, the bot keeps answering with Claude and posts the console link for
+the missing key. The forge (Claude Code) and the voice bot's offline fallback stay on Claude regardless; the switch is
+about the conversation. `bots/example-bot/brain.py` is the one place that knows the providers.
+
 ### It writes its own tools
 
 When a question needs something the bot can't do, it writes a Python tool for itself, calls it, and keeps

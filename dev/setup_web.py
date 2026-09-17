@@ -291,11 +291,29 @@ async def vault_reveal(req):
 
 SETTINGS = {"bot": ("TOOL_CREATORS", "OPEN_CHANNELS", "IDEAS_AT", "IDEAS_CHANNEL", "BOT_SYSTEM", "FORGE_URL"),
             "voice": ("WAKE_WORDS", "AUTO_JOIN"), "root": ("TZ", "KIT")}
+# "live" settings are the bot's own switches in data/settings.json (what the `settings` tool edits): read on use, no restart.
+LIVE_FILE = cfgfile.LAB / "bots" / "example-bot" / "data" / "settings.json"
+LIVE_KEYS = ("brain_provider", "brain_model", "daily_ideas", "ideas_at", "ideas_channel")
+BRAINS = {"claude": "claude-opus-5", "openai": "gpt-5", "deepseek": "deepseek-chat"}
+
+
+def live_load():
+    try:
+        return json.loads(LIVE_FILE.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
 
 
 @guarded
 async def settings_get(req):
-    return web.json_response({"bot": {k: v for k, v in cfgfile.env_values(cfgfile.BOT_ENV).items() if k in SETTINGS["bot"]},
+    live = live_load()
+    env = cfgfile.env_values(cfgfile.BOT_ENV)
+    live_view = {"brain_provider": live.get("brain_provider") or env.get("BRAIN_PROVIDER", "claude"),
+                 "brain_model": live.get("brain_model") or "",
+                 "daily_ideas": str(live.get("daily_ideas", "true")).lower(),
+                 "ideas_at": live.get("ideas_at") or env.get("IDEAS_AT", "09:00"), "ideas_channel": live.get("ideas_channel") or env.get("IDEAS_CHANNEL", "")}
+    return web.json_response({"live": live_view, "brains": BRAINS,
+                              "bot": {k: v for k, v in env.items() if k in SETTINGS["bot"]},
                               "voice": {k: v for k, v in cfgfile.env_values(cfgfile.VOICE_ENV).items() if k in SETTINGS["voice"]},
                               "root": {k: v for k, v in cfgfile.env_values(cfgfile.ROOT_ENV).items() if k in SETTINGS["root"]}})
 
@@ -303,7 +321,25 @@ async def settings_get(req):
 @guarded
 async def settings_set(req):
     body = await req.json()
-    changed = []
+    changed, live_changed = [], []
+    live_wanted = {k: cfgfile.clean(str(v)) for k, v in (body.get("live") or {}).items() if k in LIVE_KEYS}
+    if live_wanted:
+        if "brain_provider" in live_wanted and live_wanted["brain_provider"] not in BRAINS:
+            return web.json_response({"ok": False, "error": f"brain_provider must be one of {', '.join(BRAINS)}"}, status=400)
+        if "ideas_at" in live_wanted and live_wanted["ideas_at"] and not re.fullmatch(r"([01]?\d|2[0-3]):[0-5]\d", live_wanted["ideas_at"]):
+            return web.json_response({"ok": False, "error": "ideas_at is HH:MM"}, status=400)
+        live = live_load()
+        for k, v in live_wanted.items():
+            if k == "daily_ideas":
+                v = v.lower() in ("true", "on", "yes", "1")
+            if k == "brain_model" and not v:
+                live.pop(k, None); live_changed.append(k); continue
+            if live.get(k) != v:
+                live[k] = v; live_changed.append(k)
+        if "brain_provider" in live_changed:
+            live.pop("brain_model", None)                     # a new provider starts on its default model
+        LIVE_FILE.parent.mkdir(parents=True, exist_ok=True)
+        LIVE_FILE.write_text(json.dumps(live, indent=2), encoding="utf-8")
     for group, path in (("bot", cfgfile.BOT_ENV), ("voice", cfgfile.VOICE_ENV), ("root", cfgfile.ROOT_ENV)):
         wanted = {k: cfgfile.clean(str(v)) for k, v in (body.get(group) or {}).items() if k in SETTINGS[group]}
         if "TOOL_CREATORS" in wanted and not all(p.strip().isdigit() for p in wanted["TOOL_CREATORS"].split(",") if p.strip()):
@@ -312,7 +348,7 @@ async def settings_set(req):
             changed += [f"{group}:{k}" for k in cfgfile.update_env(path, wanted)]
     if changed:
         cfgfile.RESTART_MARKER.write_text("settings changed: " + ", ".join(changed) + "\n", encoding="utf-8")
-    return web.json_response({"ok": True, "changed": changed, "needs_restart": bool(changed)})
+    return web.json_response({"ok": True, "changed": changed, "live_changed": live_changed, "needs_restart": bool(changed)})
 
 
 @guarded
