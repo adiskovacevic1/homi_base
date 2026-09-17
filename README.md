@@ -127,17 +127,24 @@ one thing to keep safe: **file + passphrase = a complete backup**, and neither a
 ["XAI_API_KEY"]`) and gets them as environment variables when it runs. The bot's own keys are read the same way, so the
 voice bot and the forge fetch theirs from the text bot over the internal `/secrets` route instead of keeping copies.
 
-To add, view, change or delete a key from your PC:
+To add, view, change or delete a key from your PC, open the **console**. It runs all the time inside the dev box and is
+reachable only on the PC itself, at `http://127.0.0.1:8792/console`; it opens with the vault passphrase (five failed
+tries a minute, then a pause). `./console.ps1` / `./console.sh` just open it:
 
 ```bash
-./console.ps1        # or ./console.sh - a local page, same one-time key as the installer
+./console.ps1        # or ./console.sh; add -Apply / --apply to restart the containers after a change that needs it
 ```
 
 It lists the vault (names, notes, dates; never values), adds or changes entries, reveals a value after you type the
 passphrase again, edits the settings (owners, channels, wake words, timezone, the daily ideas post), and exports or
 imports the vault file. A changed Anthropic or ElevenLabs key applies to the bot's next use with no restart; a changed
-Discord token or setting restarts the containers when you press **Finish**. Owners can also manage secrets from
-Discord with the bot's `secrets` tool (names only, values never shown), and from a shell:
+Discord token or setting needs `docker compose up -d`, which the page tells you and `console.ps1 -Apply` runs.
+
+**When the bot needs a key it does not have**, for a tool it built or a service that rejected the old one, it never asks
+for the value in chat. It creates an empty, highlighted placeholder in the vault and answers with a link like
+`http://127.0.0.1:8792/console?need=XAI_API_KEY`: after the passphrase, those rows sit at the top in amber with the
+field already open; paste, save, and the page says to tell the bot to try again. Owners can also manage secrets from
+Discord with the bot's `secrets` tool (names, notes and placeholders; values never shown), and from a shell:
 
 ```bash
 echo -n "the-value" | docker compose exec -T example-bot python bot.py --secret-set XAI_API_KEY

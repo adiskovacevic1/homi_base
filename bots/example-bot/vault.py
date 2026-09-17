@@ -109,14 +109,31 @@ class Vault:
         data = self.load()
         return {n: data[n]["value"] for n in names if n in data and data[n].get("value")}
 
-    def set(self, name, value, note=None):
+    def set(self, name, value, note=None, pending=False):
+        """Store a value. An empty value is only allowed as a placeholder (pending=True): a named slot the bot has asked
+        the owner to fill, which the console highlights and which is never injected into a tool."""
+        if not value and not pending:
+            raise ValueError("value is empty")
         data = self.load()
         prev = data.get(name, {})
         now = time.strftime("%Y-%m-%d %H:%M:%S")
-        data[name] = {"value": value, "note": note if note is not None else prev.get("note", ""),
+        data[name] = {"value": value or "", "note": note if note is not None else prev.get("note", ""),
                       "created": prev.get("created", now), "updated": now}
         self.save(data)
-        return {"name": name, "length": len(value), "updated": now, "replaced": bool(prev)}
+        return {"name": name, "length": len(value or ""), "updated": now, "replaced": bool(prev.get("value")), "pending": not value}
+
+    def placeholder(self, name, note):
+        """Create an empty, highlighted slot for a key the bot needs; a slot that already holds a value is left alone.
+        Returns True when a placeholder was created."""
+        data = self.load()
+        if data.get(name, {}).get("value"):
+            return False
+        self.set(name, "", note, pending=True)
+        return True
+
+    def pending(self):
+        """Names waiting for a value."""
+        return sorted(n for n, d in self.load().items() if not d.get("value"))
 
     def delete(self, name):
         data = self.load()
@@ -129,7 +146,8 @@ class Vault:
         """Names, notes, timing and lengths - never values. What a UI or the model may see."""
         data = self.load()
         return [{"name": n, "note": d.get("note", ""), "created": d.get("created"), "updated": d.get("updated"),
-                 "length": len(d.get("value", "")), "needs_restart": n in NEEDS_RESTART} for n, d in sorted(data.items())]
+                 "length": len(d.get("value", "")), "needs_restart": n in NEEDS_RESTART, "pending": not d.get("value")}
+                for n, d in sorted(data.items())]
 
     # ---- passphrase
     def check_passphrase(self, passphrase):

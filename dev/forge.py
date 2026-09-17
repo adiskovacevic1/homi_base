@@ -436,6 +436,12 @@ async def main():
     await web.TCPSite(runner, "0.0.0.0", PORT).start()
     log(f"forge listening on :{PORT} (compose network only); work in {WORK}, kept {KEEP_DAYS} days; "
         f"Claude Code auth: {claude_auth({})}")
+    try:                                                     # the owner's always-on console rides in the same process
+        sys.path.insert(0, str(Path(__file__).parent))
+        import setup_web
+        asyncio.create_task(setup_web.serve_console(int(os.environ.get("CONSOLE_PORT", "8792"))))
+    except Exception as e:  # noqa - the forge must not die because the console cannot start
+        log(f"console not started: {type(e).__name__}: {e}")
     while True:
         await asyncio.sleep(3600)
 
