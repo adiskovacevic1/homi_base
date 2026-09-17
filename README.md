@@ -28,8 +28,9 @@ miss and without which the bot hears nothing; the Anthropic key is tried; an Ele
 into a list of your voices with previews; owner IDs resolve to usernames. Saving writes the `.env` files, shows
 the invite link, and the installer starts everything. `./install.sh --terminal` (or `-Terminal` in PowerShell)
 asks the same questions in the terminal instead, for a machine without a browser; there, paste with a right-click,
-since Ctrl+V does not paste into a Docker terminal on Windows. The bot starts with eight generic tools (weather, web fetch, YouTube
-search, memory, file handling) from `bots/example-bot/starter-tools/` and grows its own kit from there, so every
+since Ctrl+V does not paste into a Docker terminal on Windows. The bot starts with nine generic tools (weather, web fetch, YouTube
+search, memory, file handling, and Discord's own API scoped to reading, posting and the bot's own messages) from
+`bots/example-bot/starter-tools/` and grows its own kit from there, so every
 install becomes its household's bot rather than a copy of someone else's. Re-run the installer any time to
 reconfigure. To update, in the repo folder:
 

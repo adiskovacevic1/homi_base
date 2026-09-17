@@ -1,0 +1,17 @@
+{
+  "name": "discord_api",
+  "description": "Call Discord's REST API as this bot, with its own token (no setup needed). Use it to read channel history or a message (GET /channels/{channel_id}/messages?limit=20 via query), look up users, channels, a guild and its members, post a message or a file to any channel the bot can see (POST /channels/{id}/messages with body {\"content\": ...} and optional file_path under /data), edit or delete the bot's OWN messages (PATCH/DELETE /channels/{id}/messages/{id}), react (PUT /channels/{c}/messages/{m}/reactions/{emoji}/@me), pin, start threads, create and read polls (POST a message with a \"poll\" object), and DM someone (POST /users/@me/channels {\"recipient_id\": ...} then post to the returned channel id). Returns {status, ok, data, error?}. IDs are the long numeric snowflakes; the current channel's id is usually in the conversation. Not allowed here: guild administration - creating or deleting channels, roles, kicking, banning, webhooks, invites, or touching other people's messages; an owner can have a dedicated tool built for those. Discord's 10 MB upload limit applies to file_path. For attaching a file to your current reply prefer attach_file; use this when the file must go to another channel or a DM.",
+  "input_schema": {
+    "type": "object",
+    "properties": {
+      "method": {"type": "string", "enum": ["GET", "POST", "PATCH", "PUT", "DELETE"], "description": "HTTP method, default GET"},
+      "path": {"type": "string", "description": "API path under /api/v10, e.g. /channels/123/messages or /users/@me"},
+      "body": {"type": "object", "description": "JSON body for POST/PATCH, e.g. {\"content\": \"hello\"} or with \"embeds\", \"poll\", \"message_reference\""},
+      "query": {"type": "object", "description": "query parameters, e.g. {\"limit\": 20, \"before\": \"<message id>\"}"},
+      "file_path": {"type": "string", "description": "a file under /data to upload with a POST /channels/{id}/messages"},
+      "file_name": {"type": "string", "description": "name to give the uploaded file (default: the file's own)"}
+    },
+    "required": ["path"]
+  },
+  "secrets": ["DISCORD_TOKEN"]
+}
