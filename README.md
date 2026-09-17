@@ -53,6 +53,8 @@ anything. To have it run by itself, point Task Scheduler or cron at the same scr
 
 ### Branches
 
+(Working on the code? `BRANCHING.md` has the whole loop: feature branch off `dev`, merge back, promote.)
+
 | Branch | Who runs it | State |
 |---|---|---|
 | `dev` | nobody; scratch | anything, including broken |
