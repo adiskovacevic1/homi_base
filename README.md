@@ -195,10 +195,10 @@ DeepSeek alone therefore still gets a forge, a weaker one: it finishes fewer lon
 has no such endpoint, so with only an OpenAI key the forge is off and the bot builds small tools itself. The voice bot's
 offline fallback stays on Claude. `bots/example-bot/brain.py` is the one place that knows the providers.
 
-**Direct messages.** Anyone who shares a server with the bot can open a DM with it. `DM_POLICY` decides who gets an
-answer there: `owners` (the default: the people in `TOOL_CREATORS`; everyone else is told to find it in `#bot` on the
-server), `anyone`, or `off`. A bot set up for one person therefore does not become a second household member's private
-assistant by accident.
+**Who it talks to.** The bot knows the house, so by default it answers only its owners, the people in `TOOL_CREATORS`:
+in channels, in DMs and in voice. A non-owner who addresses it hears once an hour that it is set up for its owner, and
+chatter from them in `#bot` is ignored. `TALK_TO=anyone` makes it a shared family bot. Within that, `DM_POLICY`
+(`owners`, `anyone`, `off`) narrows direct messages, since anyone sharing a server can open a DM with a bot.
 
 **The activity log.** The bot keeps a running log of what it does on its own in `#activity` (setting
 `ACTIVITY_CHANNEL`, created when first needed, empty turns it off): coming online, every kit tool it used and for whom,

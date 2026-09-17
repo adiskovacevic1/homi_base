@@ -402,9 +402,30 @@ async function runDiscord() {
     for (const guild of c.guilds.cache.values())          // people already talking when the bot comes up
       for (const ch of guild.channels.cache.filter(isAutoChannel).values()) await autoJoin(guild, ch);
   });
+  // Who it talks to: the text bot's TALK_TO and owner list (its /policy route), refreshed every few minutes. Owners-only
+  // means only an owner can call it into a voice channel, and it only auto-joins for an owner; spoken questions from
+  // others are refused by the brain itself.
+  let policy = { talk_to: "owners", owners: [] };
+  const refreshPolicy = async () => {
+    if (!BRAIN_BASE || !INTERNAL_TOKEN) return;
+    try {
+      const r = await fetch(`${BRAIN_BASE}/policy`, { headers: { "x-internal-token": INTERNAL_TOKEN }, signal: AbortSignal.timeout(5000) });
+      if (r.ok) policy = await r.json();
+    } catch (e) { /* keep the last one; the brain may be restarting */ }
+  };
+  await refreshPolicy(); setInterval(refreshPolicy, 5 * 60 * 1000).unref();
+  const mayTalk = (userId) => policy.talk_to === "anyone" || policy.owners.length === 0 || policy.owners.includes(String(userId));
+  const toldOff = new Map();
+  const ownerOnlyLine = (userId) => {
+    if (Date.now() - (toldOff.get(userId) || 0) < 3600e3) return null;
+    toldOff.set(userId, Date.now());
+    return `I'm set up for ${policy.owners[0] ? `<@${policy.owners[0]}>` : "my owner"} only and don't answer anyone else, sorry.`;
+  };
+
   client.on(Events.VoiceStateUpdate, async (before, after) => {
     const guild = after.guild, s = sessions.get(guild.id);
     if (after.member?.user.bot) return;
+    if (!s && after.channelId && after.channelId !== before.channelId && !mayTalk(after.member?.id)) return;   // no auto-join for a non-owner
     if (s && before.channelId === s.channelId && after.channelId !== s.channelId) {          // someone left our channel
       const vc = guild.channels.cache.get(s.channelId);
       if (humans(vc) === 0) scheduleEmptyCheck(s, guild);
@@ -415,6 +436,12 @@ async function runDiscord() {
   client.on(Events.MessageCreate, async (msg) => {
     if (msg.author.bot || !msg.guild || msg.channel.type === ChannelType.DM) return;
     const cmd = msg.content.trim().toLowerCase();
+    if (!["!join", "!leave", "!voice"].includes(cmd)) return;
+    if (!mayTalk(msg.author.id)) {
+      const line = ownerOnlyLine(msg.author.id);
+      if (line) msg.reply({ content: line, allowedMentions: { parse: [] } }).catch(() => {});
+      return;
+    }
     try {
       if (cmd === "!join") await join(msg);
       else if (cmd === "!leave") await msg.reply(leave(msg.guild.id, "!leave") ? "Left the voice channel." : "I'm not in a voice channel.");

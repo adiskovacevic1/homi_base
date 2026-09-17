@@ -298,7 +298,7 @@ async def vault_reveal(req):
     return web.json_response({"ok": True, "name": name, "value": value})
 
 
-SETTINGS = {"bot": ("TOOL_CREATORS", "OPEN_CHANNELS", "HOME_CHANNEL", "ACTIVITY_CHANNEL", "DM_POLICY", "IDEAS_AT", "IDEAS_CHANNEL", "BOT_SYSTEM", "FORGE_URL"),
+SETTINGS = {"bot": ("TOOL_CREATORS", "OPEN_CHANNELS", "HOME_CHANNEL", "ACTIVITY_CHANNEL", "TALK_TO", "DM_POLICY", "IDEAS_AT", "IDEAS_CHANNEL", "BOT_SYSTEM", "FORGE_URL"),
             "voice": ("WAKE_WORDS", "AUTO_JOIN"), "root": ("TZ", "KIT")}
 # "live" settings are the bot's own switches in data/settings.json (what the `settings` tool edits): read on use, no restart.
 LIVE_FILE = cfgfile.LAB / "bots" / "example-bot" / "data" / "settings.json"

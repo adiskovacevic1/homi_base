@@ -24,8 +24,9 @@ Env (from .env):
                       it answers every message without a mention. Default "bot"; empty = none.
   ACTIVITY_CHANNEL    its running log, created when first needed: one line per tool built, used or forgotten, forge job,
                       daily review, key it is waiting for, and start. Default "activity"; empty = off.
-  DM_POLICY           who it talks to in direct messages: owners (TOOL_CREATORS; the default - anyone else is pointed to
-                      the server), anyone (every member of a shared server), off (no DMs at all).
+  TALK_TO             who it answers at all: owners (TOOL_CREATORS; the default - it knows the house, so nobody else gets a
+                      word out of it, in channels, DMs or voice) or anyone (a shared family bot).
+  DM_POLICY           direct messages, within TALK_TO: owners (default), anyone, off (no DMs at all).
   VAULT_PASSPHRASE    opens the secret vault at /data/secrets_manager/vault.enc (see vault.py), which holds DISCORD_TOKEN,
                       ANTHROPIC_API_KEY, ELEVENLABS_API_KEY and every secret the tools declare. Lives only here, so tools
                       (which can read all of /data) cannot open the vault. Older installs: VAULT_KEY (random Fernet key) still works.
@@ -66,6 +67,9 @@ TOOL_CREATORS = {s.strip() for s in os.environ.get("TOOL_CREATORS", "").split(",
 OPEN_CHANNELS = {s.strip().lstrip("#").lower() for s in os.environ.get("OPEN_CHANNELS", "").split(",") if s.strip()}
 HOME_CHANNEL = os.environ.get("HOME_CHANNEL", "bot").strip().lstrip("#").lower()
 ACTIVITY_CHANNEL = os.environ.get("ACTIVITY_CHANNEL", "activity").strip().lstrip("#").lower()
+TALK_TO = os.environ.get("TALK_TO", "owners").strip().lower()            # owners (default) | anyone: who gets answers at all
+if TALK_TO not in ("owners", "anyone"):
+    TALK_TO = "owners"
 DM_POLICY = os.environ.get("DM_POLICY", "owners").strip().lower()        # owners (default) | anyone | off
 if DM_POLICY not in ("owners", "anyone", "off"):
     DM_POLICY = "owners"
@@ -1529,14 +1533,34 @@ async def typing_indicator(channel):
                 pass
 
 
-def dm_allowed(user_id):
-    """Whether this person gets answers in direct messages, per DM_POLICY (owners = TOOL_CREATORS; an empty owner list
-    under 'owners' means everyone, as it does for tools)."""
-    if DM_POLICY == "anyone":
-        return True
-    if DM_POLICY == "off":
-        return False
+def is_owner(user_id):
+    """An owner is someone in TOOL_CREATORS; an empty list means everyone, as it does for tools (setup never leaves it empty)."""
     return not TOOL_CREATORS or str(user_id) in TOOL_CREATORS
+
+
+def may_talk(user_id):
+    """Whether this person gets any answer, per TALK_TO."""
+    return TALK_TO == "anyone" or is_owner(user_id)
+
+
+def dm_allowed(user_id):
+    """Whether this person gets answers in direct messages: TALK_TO first, then DM_POLICY."""
+    if not may_talk(user_id) or DM_POLICY == "off":
+        return False
+    return DM_POLICY == "anyone" or is_owner(user_id)
+
+
+_told_off = {}          # user id -> when we last told them it is owner-only, so a chatty non-owner hears it once an hour
+
+
+def owner_only_line(bot, user_id):
+    """The one line a non-owner gets, at most once an hour; None when they were told recently."""
+    now = time.time()
+    if now - _told_off.get(user_id, 0) < 3600:
+        return None
+    _told_off[user_id] = now
+    owner = next((f"<@{o}>" for o in sorted(TOOL_CREATORS)), "my owner")
+    return f"I'm set up for {owner} only and don't answer anyone else, sorry."
 
 
 def is_open_channel(channel):
@@ -1658,6 +1682,9 @@ def run_discord(token):
             if not text:
                 return web.json_response({"error": "text required"}, status=400)
             speaker = body.get("speaker") or "someone"
+            if not may_talk(str(body.get("speaker_id") or "")):
+                # owners-only applies to voice too; the voice bot speaks this line (an unknown speaker counts as a non-owner)
+                return web.json_response({"reply": "Sorry, I'm set up for my owner only.", "notes": [], "owner_only": True})
             hist = histories["brain:" + str(body.get("key") or "default")]
             hist.append({"role": "user", "content": f"{speaker}: {text}"})
             trusted = not TOOL_CREATORS or str(body.get("speaker_id") or "") in TOOL_CREATORS
@@ -1716,8 +1743,15 @@ def run_discord(token):
             activity(text[:1800], int(gid) if str(gid or "").isdigit() else None)
             return web.json_response({"ok": True})
 
+        async def handle_policy(req):
+            """Who the bot talks to, for the voice bot's own commands and auto-join: it enforces the same TALK_TO."""
+            if req.headers.get("X-Internal-Token") != token:
+                return web.json_response({"error": "unauthorized"}, status=401)
+            return web.json_response({"talk_to": TALK_TO, "owners": sorted(TOOL_CREATORS)})
+
         app.router.add_post("/ask", handle_ask)
         app.router.add_post("/activity", handle_activity)
+        app.router.add_get("/policy", handle_policy)
         app.router.add_get("/secrets", handle_secrets)
         app.router.add_get("/health", lambda r: web.json_response({"ok": True, "tools": len(tool_specs()) - len(META_TOOLS)}))
         runner = web.AppRunner(app)
@@ -1752,13 +1786,22 @@ def run_discord(token):
         is_dm = msg.guild is None
         if not (is_dm or bot.user in msg.mentions or is_open_channel(msg.channel)):
             return
+        if not may_talk(msg.author.id):
+            # owners-only: a non-owner who addresses it directly hears why once an hour; chatter in #bot is ignored
+            line = owner_only_line(bot, msg.author.id) if (is_dm or bot.user in msg.mentions) else None
+            if line:
+                try:
+                    await msg.reply(line, mention_author=False, allowed_mentions=discord_no_mentions())
+                except Exception:  # noqa
+                    pass
+            return
         if is_dm and not dm_allowed(msg.author.id):
-            # a per-person bot: anyone in a shared server can open a DM, but only its owners get answers there
+            # DMs narrower than TALK_TO: point them at the server (or say nothing when DMs are off)
             if DM_POLICY == "off":
                 return
             where = next((f"#{HOME_CHANNEL} on {g.name}" for g in bot.guilds if HOME_CHANNEL and g.get_member(msg.author.id)), "the server")
             try:
-                await msg.reply(f"I only chat in DMs with my owner. Find me in {where} and I'm all yours there.", mention_author=False)
+                await msg.reply(f"I don't chat in DMs. Find me in {where} and I'm all yours there.", mention_author=False)
             except Exception:  # noqa
                 pass
             return
