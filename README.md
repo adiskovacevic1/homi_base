@@ -15,10 +15,13 @@ Needs Docker Desktop (Windows, macOS) or Docker Engine (Linux), a Discord bot of
 key. ElevenLabs is optional.
 
 ```bash
-git clone https://github.com/adiskovacevic1/homi_base.git
+git clone -b stable https://github.com/adiskovacevic1/homi_base.git
 cd homi_base
 ./install.sh          # Windows: right-click install.ps1 -> Run with PowerShell
 ```
+
+`stable` is the branch households run: it only ever moves to a version that has been tried. `main` is where the work
+happens and can be half-finished at any moment, so do not install from it.
 
 It builds the three images, then opens a setup page in your browser (served from the dev container on
 `localhost:8792`, one-time key in the link, gone once you save). The page asks for the bot token, your API key(s),
@@ -33,15 +36,31 @@ since Ctrl+V does not paste into a Docker terminal on Windows. The bot starts wi
 search, memory, file handling, and Discord's own API scoped to reading, posting and the bot's own messages) from
 `bots/example-bot/starter-tools/` and grows its own kit from there, so every
 install becomes its household's bot rather than a copy of someone else's. Re-run the installer any time to
-reconfigure. To update, in the repo folder:
+reconfigure.
+
+## Updating
+
+In the install folder:
 
 ```bash
-git pull
-docker compose up -d --build
+./update.sh           # Windows: powershell -ExecutionPolicy Bypass -File .\update.ps1
 ```
 
-That rebuilds only the images whose code changed and swaps the running containers; kits, memory, uploads and
-settings are untouched because they live outside the images (see "How code gets into the containers" below).
+It fetches `stable`, shows what changed, rebuilds only the images whose code changed and swaps the running
+containers, about half a minute of downtime. Kits, the vault, memory, uploads and settings are untouched because
+they live outside the images (see "How code gets into the containers" below). `--check` looks without changing
+anything. To have it run by itself, point Task Scheduler or cron at the same script.
+
+### Releasing (for whoever maintains the code)
+
+Work on `main` and try it on your own install. When a version is worth handing out:
+
+```bash
+./release.sh          # Windows: .\release.ps1 - lists what would move, asks, then pushes main to stable
+```
+
+Households get it on their next update. A release that turns out badly is undone by pushing an older commit to
+`stable`; an install can be held back with `git checkout <commit>` and a rebuild.
 
 ## Daily use
 
