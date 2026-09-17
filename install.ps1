@@ -18,14 +18,27 @@ if ($Terminal) {
   docker compose run --rm --no-deps dev python /opt/forge/setup.py; if (-not $?) { exit 1 }
 } else {
   $key = -join ((48..57) + (65..90) + (97..122) | Get-Random -Count 24 | ForEach-Object { [char]$_ })
-  $url = "http://localhost:8792/setup?key=$key"
-  Write-Host "Opening the setup page: $url"
-  Write-Host "(if no browser opens, paste that address into one on this PC; Ctrl+C here aborts)"
+  $url = "http://127.0.0.1:8792/setup?key=$key"
   $p = Start-Process -PassThru -NoNewWindow docker -ArgumentList "compose run --rm --no-deps -p 127.0.0.1:8792:8792 -e SETUP_KEY=$key dev python /opt/forge/setup_web.py"
+  $up = $false
   for ($i = 0; $i -lt 60; $i++) {
-    try { Invoke-WebRequest -UseBasicParsing "http://localhost:8792/health" -TimeoutSec 2 *> $null; break } catch { Start-Sleep -Milliseconds 500 }
+    try { Invoke-WebRequest -UseBasicParsing "http://127.0.0.1:8792/health" -TimeoutSec 2 *> $null; $up = $true; break } catch { Start-Sleep -Milliseconds 500 }
   }
-  Start-Process $url
+  try { Set-Clipboard -Value $url } catch {}
+  Write-Host ""
+  Write-Host "  ============================================================" -ForegroundColor Green
+  Write-Host "   SETUP PAGE  (copied to your clipboard; Ctrl+click or paste into a browser)" -ForegroundColor Green
+  Write-Host ""
+  Write-Host "   $url" -ForegroundColor Cyan
+  Write-Host ""
+  Write-Host "  ============================================================" -ForegroundColor Green
+  if (-not $up) { Write-Host "  (the setup server is taking a while to answer; the page may need a refresh)" -ForegroundColor Yellow }
+  $opened = $false
+  try { Start-Process $url; $opened = $true } catch {}
+  if (-not $opened) { try { Start-Process "rundll32.exe" -ArgumentList "url.dll,FileProtocolHandler $url"; $opened = $true } catch {} }
+  if ($opened) { Write-Host "  Opening it in your browser now. This window waits until you save or abort there (Ctrl+C aborts)." }
+  else { Write-Host "  Could not open a browser from here; paste the address above into one. This window waits (Ctrl+C aborts)." -ForegroundColor Yellow }
+  Write-Host ""
   $p.WaitForExit()
 }
 if (-not (Test-Path "bots\example-bot\.env")) { Write-Host "No configuration was written; nothing started."; exit 1 }
