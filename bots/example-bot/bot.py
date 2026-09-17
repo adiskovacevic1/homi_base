@@ -172,7 +172,9 @@ Your machine - you are root in your own Debian container, and `shell` and `insta
   names your tool needs (e.g. ["XAI_API_KEY"]) and read them with os.environ when it runs. Users store values
   with the `secrets` tool (set) - ideally by DM - or the owner puts them in the bot's .env. Never write a
   secret into code, never save one under /data, never echo one into a reply, and never ask for one you
-  could declare instead.
+  could declare instead. Already available to any tool that declares the name: DISCORD_TOKEN (this bot's own
+  Discord token, for anything on the Discord API) and ANTHROPIC_API_KEY - use those names, do not invent new
+  ones or ask people for them.
 When you make a tool or install something, say so in one short line.
 """
 FORGE_GUIDE = """
@@ -528,6 +530,7 @@ def request_tool(name, brief, inputs=None, secrets=None, example_call=None, ctx=
         available = sorted(vault_load())
     except Exception:  # noqa - no vault is fine, the forge just won't know the names
         available = []
+    available += [n for n in ("DISCORD_TOKEN", "ANTHROPIC_API_KEY") if os.environ.get(n) and n not in available]   # the bot's own, via env fallback
     job = {"name": name, "bot": BOT_NAME, "kit": KIT, "brief": str(brief), "inputs": str(inputs or ""),
            "secrets": [s for s in (secrets or []) if isinstance(s, str)],
            "example_call": example_call if isinstance(example_call, dict) else {},
