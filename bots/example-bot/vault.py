@@ -19,7 +19,7 @@ from cryptography.hazmat.primitives.kdf.scrypt import Scrypt
 DEFAULT_FILE = Path(os.environ.get("VAULT_FILE", "/data/secrets_manager/vault.enc"))
 NAME_RE = r"^[A-Z][A-Z0-9_]{1,63}$"
 # The keys the bot itself and its sibling containers need; the brain's /secrets route hands out only these.
-BOOTSTRAP = ("DISCORD_TOKEN", "ANTHROPIC_API_KEY", "ELEVENLABS_API_KEY", "ELEVEN_VOICE_ID")
+BOOTSTRAP = ("DISCORD_TOKEN", "ANTHROPIC_API_KEY", "DEEPSEEK_API_KEY", "ELEVENLABS_API_KEY", "ELEVEN_VOICE_ID")   # what /secrets may hand to sibling containers
 NEEDS_RESTART = ("DISCORD_TOKEN",)              # everything else is read on use, so a change applies live
 
 WORDS = ("amber basil cedar coral delta ember fable flint gale grove harbor iris jade juniper kelp lark lemon lunar maple marsh "

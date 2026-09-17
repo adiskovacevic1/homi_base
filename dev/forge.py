@@ -23,7 +23,8 @@ Env: INTERNAL_TOKEN (else read from /bots/example-bot/.env, so the bots and the 
      FORGE_WORK (/root/work), FORGE_TIMEOUT (360s for one build), FORGE_MAX_TURNS (60), FORGE_KEEP_DAYS (7).
 Without a token the forge idles and the dev box is just a dev box, as before.
 Claude Code authenticates with the dev box's login if someone has logged in here (it persists in the /root volume),
-else with ANTHROPIC_API_KEY from the environment or example-bot's .env - the bot's own key, billed per token.
+else with the bot's ANTHROPIC_API_KEY (vault or environment), else with the bot's DEEPSEEK_API_KEY through DeepSeek's
+Anthropic-compatible endpoint - the bot's own key either way, billed per token.
 
 Work directories are kept FORGE_KEEP_DAYS so a bad tool can be understood: the brief, the prompt, Claude Code's
 output, RESULT.json and the previous version of a replaced tool are all there.
@@ -84,22 +85,36 @@ def brain_secret(name):
         return ""
 
 
+DEEPSEEK_ANTHROPIC_URL = "https://api.deepseek.com/anthropic"   # DeepSeek's Anthropic-compatible endpoint; Claude Code talks to it as is
+DEEPSEEK_MODEL = os.environ.get("FORGE_DEEPSEEK_MODEL", "deepseek-chat")
+
+
 def claude_auth(env):
-    """How the headless Claude Code authenticates: the dev box's own login when someone has run `claude` and logged in
-    here (the credentials live in the /root volume), else the bot's API key from its vault (via the brain) or from the
-    environment, billed per token like the bot itself."""
+    """How the headless Claude Code authenticates, in order: the dev box's own login when someone has run `claude` and
+    logged in here (the credentials live in the /root volume); the bot's Anthropic key from its vault (via the brain) or
+    the environment, billed per token like the bot itself; else the bot's DeepSeek key, pointing Claude Code at
+    DeepSeek's Anthropic-compatible endpoint. A household on DeepSeek alone still gets a forge, a weaker one: DeepSeek
+    finishes fewer long agentic builds within the time budget than Claude does."""
+    for k in ("ANTHROPIC_BASE_URL", "ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_MODEL", "ANTHROPIC_SMALL_FAST_MODEL"):
+        env.pop(k, None)
     if (Path.home() / ".claude" / ".credentials.json").exists():
         env.pop("ANTHROPIC_API_KEY", None)
         return "dev box login"
     key = brain_secret("ANTHROPIC_API_KEY")
     if key:
         env["ANTHROPIC_API_KEY"] = key
-        return "the bot's API key (vault)"
+        return "the bot's Anthropic key (vault)"
     key = env_value("ANTHROPIC_API_KEY")
     if key:
         env["ANTHROPIC_API_KEY"] = key
-        return "the bot's API key (env)"
-    return "none - add ANTHROPIC_API_KEY in the console, or log in with `docker compose exec dev claude`"
+        return "the bot's Anthropic key (env)"
+    key = brain_secret("DEEPSEEK_API_KEY") or env_value("DEEPSEEK_API_KEY")
+    if key:
+        env.pop("ANTHROPIC_API_KEY", None)
+        env.update({"ANTHROPIC_BASE_URL": DEEPSEEK_ANTHROPIC_URL, "ANTHROPIC_AUTH_TOKEN": key,
+                    "ANTHROPIC_MODEL": DEEPSEEK_MODEL, "ANTHROPIC_SMALL_FAST_MODEL": DEEPSEEK_MODEL})
+        return f"the bot's DeepSeek key via {DEEPSEEK_ANTHROPIC_URL} ({DEEPSEEK_MODEL})"
+    return "none - add ANTHROPIC_API_KEY or DEEPSEEK_API_KEY in the console, or log in with `docker compose exec dev claude`"
 
 
 def log(msg):

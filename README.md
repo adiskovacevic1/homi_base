@@ -165,8 +165,12 @@ The model that answers is a switch, not a build: **Claude** (`claude-opus-5`, th
 `DEEPSEEK_API_KEY`. An owner switches in chat ("use deepseek from now on" reaches the `settings` tool) or in the
 console's live settings, and the next message is answered by the new model with the same tools, memory and history.
 If the new provider's key is not in the vault yet, the bot keeps answering with Claude and posts the console link for
-the missing key. The forge (Claude Code) and the voice bot's offline fallback stay on Claude regardless; the switch is
-about the conversation. `bots/example-bot/brain.py` is the one place that knows the providers.
+the missing key. The switch is about the conversation; the forge is Claude Code and follows the keys rather than the
+setting: it uses the dev box's login or the Anthropic key when there is one, and otherwise runs on the DeepSeek key
+through DeepSeek's Anthropic-compatible endpoint (`api.deepseek.com/anthropic`, model `deepseek-chat`). A household on
+DeepSeek alone therefore still gets a forge, a weaker one: it finishes fewer long builds within the time budget. OpenAI
+has no such endpoint, so with only an OpenAI key the forge is off and the bot builds small tools itself. The voice bot's
+offline fallback stays on Claude. `bots/example-bot/brain.py` is the one place that knows the providers.
 
 ### It writes its own tools
 
