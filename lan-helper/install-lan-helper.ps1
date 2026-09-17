@@ -1,4 +1,4 @@
-# Installs lan-helper.ps1 as a background task that starts at logon (hidden window), and opens its port to Docker.
+# Installs lan-helper.ps1 as a background task that starts at logon (no window), and opens its port to Docker.
 # Run once, as Administrator:   powershell -ExecutionPolicy Bypass -File .\lan-helper\install-lan-helper.ps1
 # Remove with:                  ... -Uninstall
 param([switch]$Uninstall, [int]$Port = 8793)
@@ -35,8 +35,10 @@ if ($lanRoute) { $prof = Get-NetConnectionProfile -InterfaceIndex $lanRoute.Inte
     Write-Host "Note: your LAN adapter '$($prof.InterfaceAlias)' is marked Public. The rules above still work, but Windows itself will not see" -ForegroundColor Yellow
     Write-Host "      printers, TVs or casting on a Public network. For a home network: Settings > Network & internet > Ethernet > Private." -ForegroundColor Yellow } }
 
-# Logon task: hidden PowerShell running the helper as this user, restarted if it dies.
-$action = New-ScheduledTaskAction -Execute "powershell.exe" -Argument "-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File `"$Script`" -Port $Port"
+# Logon task: PowerShell running the helper as this user with no console at all, restarted if it dies.
+# "-WindowStyle Hidden" is not enough: on Windows 11 the default console host is Windows Terminal, which opens a visible
+# window for the task anyway (and the owner then closes it, killing the helper). conhost --headless gives it no window.
+$action = New-ScheduledTaskAction -Execute "$env:SystemRoot\System32\conhost.exe" -Argument "--headless powershell.exe -NoProfile -ExecutionPolicy Bypass -File `"$Script`" -Port $Port"
 $trigger = New-ScheduledTaskTrigger -AtLogOn -User $env:USERNAME
 $settings = New-ScheduledTaskSettingsSet -RestartCount 999 -RestartInterval (New-TimeSpan -Minutes 1) -ExecutionTimeLimit (New-TimeSpan -Days 3650) -StartWhenAvailable -MultipleInstances IgnoreNew
 Get-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue | Unregister-ScheduledTask -Confirm:$false
