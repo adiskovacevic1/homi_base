@@ -212,6 +212,9 @@ async def main():
     app.router.add_post("/api/write", write)
     app.router.add_post("/api/cancel", cancel)
     app.router.add_get("/health", lambda r: web.json_response({"ok": True}))
+    assets = Path(__file__).parent / "assets"                # the console's sounds; small, and nothing secret in them
+    if assets.is_dir():
+        app.router.add_static("/assets/", assets, show_index=False)
     runner = web.AppRunner(app)
     await runner.setup()
     await web.TCPSite(runner, "0.0.0.0", PORT).start()      # the installer publishes this port on 127.0.0.1 only

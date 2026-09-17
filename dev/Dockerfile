@@ -17,4 +17,5 @@ WORKDIR /bots
 ENTRYPOINT ["/usr/bin/tini", "--"]
 # The forge: builds tools for the bots with a headless Claude Code (see forge.py). No INTERNAL_TOKEN -> it idles.
 COPY forge.py setup.py setup_web.py setup.html /opt/forge/
+COPY assets/ /opt/forge/assets/
 CMD ["python", "/opt/forge/forge.py"]

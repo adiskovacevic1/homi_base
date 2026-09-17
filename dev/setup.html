@@ -38,6 +38,8 @@
   .meter .bars { display:flex; gap:4px; } .meter .bars i { width:14px; height:18px; border:1px solid var(--line); background:#0a1a10; transition:background .3s, box-shadow .3s; }
   .meter .bars i.on { background:var(--phos); box-shadow:0 0 8px var(--phos); }
   .meter .bars i.on:nth-child(n+5) { background:var(--phos-soft); }
+  .meter .sound { margin-left:auto; padding:4px 10px; font-size:13px; text-transform:none; letter-spacing:0; }
+  .meter .sound.off { color:var(--muted); border-color:var(--line); }
   /* panels */
   section { border:1px solid var(--line); border-radius:6px; padding:18px 20px 20px; margin-bottom:14px; background:var(--panel); position:relative;
     box-shadow:inset 0 0 30px rgba(0,0,0,.35); animation:panelin .5s ease-out both; }
@@ -116,7 +118,8 @@
 |_| |_|\___/|_|  |_|___|
 </pre>
     <ul class="boot" id="boot" aria-live="polite"></ul>
-    <div class="meter" aria-label="setup progress"><span>SIGNAL</span><div class="bars" id="bars"><i></i><i></i><i></i><i></i><i></i><i></i></div><span id="meter-text">0/6 checks</span></div>
+    <div class="meter" aria-label="setup progress"><span>SIGNAL</span><div class="bars" id="bars"><i></i><i></i><i></i><i></i><i></i><i></i></div><span id="meter-text">0/6 checks</span>
+      <button type="button" id="sound" class="sound" onclick="toggleSound()" title="ambient loop and key clicks">♪ sound: on</button></div>
   </header>
 
   <form id="form" onsubmit="return false">
@@ -232,6 +235,49 @@ if (location.protocol === "file:" || "__KEY__".startsWith("__")) {
 }
 const KEY = "__KEY__";
 const $ = (id) => document.getElementById(id);
+
+// ---- sound: an ambient loop behind the console and a key click while typing. Browsers only allow audio after a gesture,
+// so everything starts on the first click or keypress; the toggle remembers itself per browser.
+const snd = { ctx: null, loop: null, keys: null, off: null, loopGain: null, on: true, ready: false };
+try { snd.on = localStorage.getItem("homi-sound") !== "off"; } catch {}
+function paintSound() { const b = $("sound"); b.textContent = snd.on ? "♪ sound: on" : "♪ sound: off"; b.classList.toggle("off", !snd.on); }
+async function soundStart() {
+  if (snd.ready || !snd.on) return;
+  snd.ready = true;
+  try {
+    snd.ctx = new (window.AudioContext || window.webkitAudioContext)();
+    const load = async (name) => snd.ctx.decodeAudioData(await (await fetch("/assets/" + name)).arrayBuffer());
+    [snd.loop, snd.keys, snd.off] = await Promise.all([load("loop.mp3"), load("keys.mp3"), load("off.mp3")]);
+    snd.loopGain = snd.ctx.createGain(); snd.loopGain.gain.value = 0; snd.loopGain.connect(snd.ctx.destination);
+    const src = snd.ctx.createBufferSource(); src.buffer = snd.loop; src.loop = true; src.connect(snd.loopGain); src.start();
+    snd.loopGain.gain.linearRampToValueAtTime(0.22, snd.ctx.currentTime + 2.5);   // fade in
+  } catch (e) { snd.ready = false; console.warn("sound unavailable:", e.message); }
+}
+function keyClick() {
+  if (!snd.on || !snd.keys || !snd.ctx) return;
+  const src = snd.ctx.createBufferSource(); src.buffer = snd.keys;
+  src.playbackRate.value = 0.92 + Math.random() * 0.16;
+  const g = snd.ctx.createGain(); g.gain.value = 0.55; src.connect(g); g.connect(snd.ctx.destination);
+  const start = Math.random() * Math.max(0.1, snd.keys.duration - 0.3), dur = 0.07 + Math.random() * 0.08;
+  g.gain.setValueAtTime(0.55, snd.ctx.currentTime + dur - 0.02); g.gain.linearRampToValueAtTime(0, snd.ctx.currentTime + dur);
+  src.start(0, start, dur);
+}
+function toggleSound() {
+  snd.on = !snd.on; try { localStorage.setItem("homi-sound", snd.on ? "on" : "off"); } catch {}
+  paintSound();
+  if (snd.on) soundStart();
+  if (snd.loopGain) snd.loopGain.gain.linearRampToValueAtTime(snd.on ? 0.22 : 0, snd.ctx.currentTime + 0.4);
+}
+function soundOff(seconds) {
+  if (!snd.ctx) return;
+  if (snd.loopGain) snd.loopGain.gain.linearRampToValueAtTime(0, snd.ctx.currentTime + seconds * 0.4);   // music drops out first
+  if (snd.on && snd.off) {                                   // then the tube itself: the click, the whine winding down
+    const src = snd.ctx.createBufferSource(); src.buffer = snd.off;
+    const g = snd.ctx.createGain(); g.gain.value = 0.9; src.connect(g); g.connect(snd.ctx.destination); src.start();
+  }
+}
+document.addEventListener("pointerdown", soundStart, { once: false });
+document.addEventListener("keydown", (e) => { soundStart(); if (e.target.matches("input, select, textarea") && (e.key.length === 1 || e.key === "Backspace" || e.key === "Enter")) keyClick(); });
 const api = (path, body) => fetch(path, { method: body ? "POST" : "GET", headers: { "content-type": "application/json", "X-Setup-Key": KEY }, body: body ? JSON.stringify(body) : undefined }).then(r => r.json());
 const debounce = (fn, ms) => { let t; return (...a) => { clearTimeout(t); t = setTimeout(() => fn(...a), ms); }; };
 let state = { kits: {}, discord: null, voices: [], checks: {} };
@@ -272,6 +318,7 @@ async function boot() {
 }
 
 async function init() {
+  paintSound();
   boot();
   $("name").addEventListener("input", () => { if (!$("kit").dataset.touched) { $("kit").value = kitDefault($("name").value); checkKit(); } });
   $("kit").addEventListener("input", () => { $("kit").dataset.touched = "1"; checkKit(); });
@@ -419,6 +466,7 @@ function powerDown(seconds) {
 }
 function keepScreen() { clearTimeout(offTimer); $("shutdown").textContent = "screen kept - close this tab whenever you like"; }
 function crtOff() {
+  soundOff(1.2);
   document.body.classList.remove("flicker");
   const m = document.querySelector("main"); m.classList.add("crt-off");
   setTimeout(() => { document.body.classList.add("dead"); m.style.display = "none"; $("dead").style.display = "flex"; }, 1300);
