@@ -8,7 +8,7 @@ fail=0
 say() { echo "  $*"; }
 
 # --- files that must never be tracked, whatever they contain
-paths=$(git ls-files | grep -E '(^|/)\.env$|(^|/)[^/]+\.env$|(^|/)vault\.enc|(^|/)kits/|(^|/)data/|\.env\.bak-' | grep -vE '\.env\.example$' || true)
+paths=$(git ls-files --cached | grep -E '(^|/)\.env$|(^|/)[^/]+\.env$|(^|/)vault\.enc|(^|/)kits/|(^|/)data/|\.env\.bak-' | grep -vE '\.env\.example$' || true)
 if [[ -n "$paths" ]]; then
   echo "FAIL: files that belong to an install are tracked:"; echo "$paths" | sed 's/^/  /'; fail=1
 fi
@@ -24,8 +24,12 @@ declare -A patterns=(
   ["private key block"]='-----BEGIN [A-Z ]*PRIVATE KEY-----'
   ["filled passphrase"]='VAULT_(PASSPHRASE|KEY)=[^[:space:]$"'"'"'{]{8,}'
 )
+# --cached: the index, so a locally staged file is checked before it is ever committed. The passphrase pattern skips the
+# CI workflows and the tests, which set throwaway passphrases on purpose; the key patterns still scan everything.
 for name in "${!patterns[@]}"; do
-  hits=$(git grep -nIE "${patterns[$name]}" -- . ':!scripts/check-no-secrets.sh' 2>/dev/null || true)
+  skip=(':!scripts/check-no-secrets.sh')
+  [[ "$name" == "filled passphrase" ]] && skip+=(':!.github/' ':!tests/')
+  hits=$(git grep --cached -nIE "${patterns[$name]}" -- . "${skip[@]}" 2>/dev/null || true)
   if [[ -n "$hits" ]]; then
     echo "FAIL: something shaped like a $name is committed:"
     echo "$hits" | sed -E 's/(sk-ant-|sk_|xai-)[A-Za-z0-9_-]+/\1<redacted>/g; s/^/  /' | head -5
