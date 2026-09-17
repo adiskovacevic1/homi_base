@@ -71,6 +71,114 @@ def token():
 BRAIN = os.environ.get("BRAIN_URL", "http://example-bot:8790").replace("/ask", "").rstrip("/")
 
 
+def brain_activity(text, guild_id=None):
+    """One line for the bot's #activity, through its internal /activity route. Best effort: the log is a nicety."""
+    import urllib.request
+    tok = token()
+    if not tok:
+        return
+    try:
+        body = json.dumps({"text": text[:1800], "guild_id": guild_id}).encode()
+        req = urllib.request.Request(f"{BRAIN}/activity", data=body, method="POST",
+                                     headers={"X-Internal-Token": tok, "Content-Type": "application/json"})
+        with urllib.request.urlopen(req, timeout=5):
+            pass
+    except Exception:  # noqa
+        pass
+
+
+PROGRESS_EVERY_S = int(os.environ.get("FORGE_PROGRESS_EVERY", "25"))   # seconds between progress lines
+PROGRESS_EVERY_N = 6                                                     # or this many steps, whichever comes first
+
+
+class Progress:
+    """Turns Claude Code's stream of tool calls into a few readable lines for #activity: batched, never one per call."""
+
+    def __init__(self, name, guild_id, mode):
+        self.name, self.guild_id, self.mode = name, guild_id, mode
+        self.steps, self.pending, self.last, self.texts = 0, [], time.time(), 0
+
+    @staticmethod
+    def describe(call):
+        tool, inp = call.get("name", "?"), call.get("input") or {}
+        if tool in ("Write", "Edit", "Read"):
+            return f"{tool} {os.path.basename(str(inp.get('file_path', '')))}".strip()
+        if tool == "Bash":
+            cmd = str(inp.get("command", ""))
+            if "harness.py" in cmd:
+                return "test run" + (" (selftest)" if "--selftest" in cmd else "")
+            if "pip install" in cmd:
+                return "pip install " + " ".join(w for w in cmd.split() if not w.startswith("-") and w not in ("pip", "install"))[:40]
+            return f"Bash {cmd[:40]}"
+        if tool in ("Glob", "Grep"):
+            return f"{tool} {str(inp.get('pattern', ''))[:30]}"
+        return tool
+
+    def event(self, ev):
+        if ev.get("type") != "assistant":
+            return
+        content = (ev.get("message") or {}).get("content") or []
+        for b in content:
+            if isinstance(b, dict) and b.get("type") == "tool_use":
+                self.steps += 1
+                self.pending.append(self.describe(b))
+            elif isinstance(b, dict) and b.get("type") == "text" and (b.get("text") or "").strip():
+                self.texts += 1
+        if len(self.pending) >= PROGRESS_EVERY_N or (self.pending and time.time() - self.last >= PROGRESS_EVERY_S):
+            self.flush()
+
+    def flush(self, final=False):
+        if not self.pending:
+            return
+        # "test run ×3" instead of three entries
+        counts = {}
+        for s in self.pending:
+            counts[s] = counts.get(s, 0) + 1
+        what = ", ".join(f"{s} ×{n}" if n > 1 else s for s, n in counts.items())
+        first = self.steps - len(self.pending) + 1
+        rng = f"step {first}" if first == self.steps else f"steps {first}-{self.steps}"
+        brain_activity(f"⚒️ `{self.name}` · {rng} · {what}"[:400], self.guild_id)
+        self.pending, self.last = [], time.time()
+
+
+def run_streaming(argv, work, env, deadline, progress):
+    """Run Claude Code, feed each stream-json event to progress, return (final result event, exit code, timed_out).
+    A reader thread hands lines over so a build that goes quiet still hits the deadline."""
+    import queue, threading
+    q = queue.Queue()
+    with open(work / "claude-stderr.log", "w", encoding="utf-8") as errf:
+        proc = subprocess.Popen(argv, cwd=work, env=env, stdout=subprocess.PIPE, stderr=errf, text=True,
+                                encoding="utf-8", errors="replace", bufsize=1)
+
+        def reader():
+            for line in proc.stdout:
+                q.put(line)
+            q.put(None)
+        threading.Thread(target=reader, daemon=True).start()
+        meta, timed_out = {}, False
+        with open(work / "claude-output.jsonl", "w", encoding="utf-8") as raw:
+            while True:
+                try:
+                    line = q.get(timeout=max(0.5, min(5.0, deadline - time.time())))
+                except queue.Empty:
+                    if time.time() >= deadline:
+                        proc.kill(); timed_out = True; break
+                    continue
+                if line is None:
+                    break
+                raw.write(line)
+                try:
+                    ev = json.loads(line)
+                except ValueError:
+                    continue
+                if ev.get("type") == "result":
+                    meta = ev
+                else:
+                    progress.event(ev)
+        rc = proc.wait(timeout=30) if not timed_out else -9
+    return meta, rc, timed_out
+
+
 def brain_secret(name):
     """A bootstrap secret from the bot's vault, through its internal /secrets route (compose network, shared token)."""
     import urllib.request
@@ -354,23 +462,25 @@ def build(job):
     auth = claude_auth(env)
 
     out = {"ok": False, "status": "failed", "name": name, "work_dir": str(work), "mode": job.get("mode", "build")}
-    argv = ["claude", "-p", prompt, "--output-format", "json", "--max-turns", str(MAX_TURNS),
+    # stream-json: one event per line while Claude Code works, so the steps can be relayed to the bot's #activity as they
+    # happen (the last line is the same result object the plain json format would have returned)
+    argv = ["claude", "-p", prompt, "--output-format", "stream-json", "--verbose", "--max-turns", str(MAX_TURNS),
             "--allowedTools", *ALLOWED_TOOLS]
     log(f"building `{name}` for {bot} in {work.name} (auth: {auth})")
+    progress = Progress(name, job.get("guild_id"), job.get("mode", "build"))
+    meta, rc, stderr_text = {}, None, ""
     try:
-        p = subprocess.run(argv, cwd=work, env=env, capture_output=True, text=True, timeout=CLAUDE_TIMEOUT)
-        (work / "claude-output.json").write_text(p.stdout, encoding="utf-8")
-        (work / "claude-stderr.log").write_text(p.stderr, encoding="utf-8")
-        try:
-            meta = json.loads(p.stdout)
+        meta, rc, timed_out = run_streaming(argv, work, env, started + CLAUDE_TIMEOUT, progress)
+        stderr_text = (work / "claude-stderr.log").read_text(encoding="utf-8", errors="replace") if (work / "claude-stderr.log").exists() else ""
+        if timed_out:
+            raise subprocess.TimeoutExpired(argv[0], CLAUDE_TIMEOUT)
+        if meta:
             out["cost_usd"] = round(float(meta.get("total_cost_usd") or 0), 3)
             out["turns"] = meta.get("num_turns")
-        except ValueError:
-            meta = {}
-        if p.returncode != 0 and not (work / "RESULT.json").exists():
+        if rc != 0 and not (work / "RESULT.json").exists():
             said = (meta.get("result") or "").strip() if isinstance(meta, dict) else ""
             out["failure"] = (f"Claude Code could not run: {said[:300]}" if said
-                              else f"Claude Code exited {p.returncode}: {(p.stderr or p.stdout).strip()[-400:]}")
+                              else f"Claude Code exited {rc}: {stderr_text.strip()[-400:]}")
             if "log" in said.lower() and "in" in said.lower():
                 out["failure"] += " - the dev box's Claude Code login is missing or expired; the owner has to run `docker compose exec dev claude` once and log in"
             return out
@@ -379,6 +489,7 @@ def build(job):
                           "harder than it looks (hostile data source, no usable API); a narrower brief or a different source may work")
         return out
     finally:
+        progress.flush(final=True)
         out["seconds"] = round(time.time() - started)
         if out.get("failure"):
             log(f"`{name}` failed after {out['seconds']}s: {out['failure'][:200]}")

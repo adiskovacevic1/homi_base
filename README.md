@@ -189,8 +189,10 @@ offline fallback stays on Claude. `bots/example-bot/brain.py` is the one place t
 **The activity log.** The bot keeps a running log of what it does on its own in `#activity` (setting
 `ACTIVITY_CHANNEL`, created when first needed, empty turns it off): coming online, every kit tool it used and for whom,
 tools written, rewritten or forgotten, forge jobs started and finished, shell and installs, secrets set by name (never
-a value), settings changed, the daily review, the first day, and any key it is waiting for. Reading it is how you
-see the bot growing without following every conversation.
+a value), settings changed, the daily review, the first day, and any key it is waiting for. While the forge builds,
+it reports its steps there too, batched every few actions ("steps 7-12 · Edit tv.py, test run ×2 …"), so a
+three-minute build is visible as it happens. Reading the log is how you see the bot growing without following every
+conversation.
 
 **Pictures.** Every image posted to the bot is saved under `/data/uploads` and its path given to the model, so a brain
 without vision (DeepSeek) is not stuck: the `describe_image` starter tool sends the file to a vision model and returns

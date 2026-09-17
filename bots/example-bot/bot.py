@@ -646,7 +646,8 @@ def request_tool(name, brief, inputs=None, secrets=None, example_call=None, ctx=
     job = {"name": name, "bot": BOT_NAME, "kit": KIT, "brief": str(brief), "inputs": str(inputs or ""),
            "secrets": [s for s in (secrets or []) if isinstance(s, str)],
            "example_call": example_call if isinstance(example_call, dict) else {},
-           "requested_by": ctx.get("who", ""), "available_secrets": available, "mode": "build"}
+           "requested_by": ctx.get("who", ""), "available_secrets": available, "mode": "build",
+           "guild_id": ctx.get("guild_id")}                  # so the forge's progress lines land in that server's #activity
     if mode == "repair":                                     # the agent gets the current code and the failure, and fixes rather than rewrites
         if not code_path(name).exists():
             raise ToolError(f"there is no tool named `{name}` to repair; use mode build")
@@ -1685,7 +1686,23 @@ def run_discord(token):
             return web.json_response({"secrets": secret_env(wanted)})
 
         app = web.Application()
+        async def handle_activity(req):
+            """A sibling container's line for #activity (the forge reports its progress this way). Token-guarded, text only."""
+            if req.headers.get("X-Internal-Token") != token:
+                return web.json_response({"error": "unauthorized"}, status=401)
+            try:
+                body = await req.json()
+            except Exception:  # noqa
+                return web.json_response({"error": "body must be JSON"}, status=400)
+            text = str(body.get("text") or "").strip()
+            if not text:
+                return web.json_response({"error": "text required"}, status=400)
+            gid = body.get("guild_id")
+            activity(text[:1800], int(gid) if str(gid or "").isdigit() else None)
+            return web.json_response({"ok": True})
+
         app.router.add_post("/ask", handle_ask)
+        app.router.add_post("/activity", handle_activity)
         app.router.add_get("/secrets", handle_secrets)
         app.router.add_get("/health", lambda r: web.json_response({"ok": True, "tools": len(tool_specs()) - len(META_TOOLS)}))
         runner = web.AppRunner(app)
