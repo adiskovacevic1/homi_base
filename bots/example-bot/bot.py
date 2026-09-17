@@ -22,6 +22,8 @@ Env (from .env):
   OPEN_CHANNELS       channels it answers in without being @mentioned, by name or ID (e.g. bot-chat)
   HOME_CHANNEL        its own text channel: created on joining a server if missing, where it introduces itself, and where
                       it answers every message without a mention. Default "bot"; empty = none.
+  ACTIVITY_CHANNEL    its running log, created when first needed: one line per tool built, used or forgotten, forge job,
+                      daily review, key it is waiting for, and start. Default "activity"; empty = off.
   VAULT_PASSPHRASE    opens the secret vault at /data/secrets_manager/vault.enc (see vault.py), which holds DISCORD_TOKEN,
                       ANTHROPIC_API_KEY, ELEVENLABS_API_KEY and every secret the tools declare. Lives only here, so tools
                       (which can read all of /data) cannot open the vault. Older installs: VAULT_KEY (random Fernet key) still works.
@@ -61,6 +63,7 @@ TOOL_TIMEOUT = int(os.environ.get("TOOL_TIMEOUT", "30"))
 TOOL_CREATORS = {s.strip() for s in os.environ.get("TOOL_CREATORS", "").split(",") if s.strip()}
 OPEN_CHANNELS = {s.strip().lstrip("#").lower() for s in os.environ.get("OPEN_CHANNELS", "").split(",") if s.strip()}
 HOME_CHANNEL = os.environ.get("HOME_CHANNEL", "bot").strip().lstrip("#").lower()
+ACTIVITY_CHANNEL = os.environ.get("ACTIVITY_CHANNEL", "activity").strip().lstrip("#").lower()
 MAX_TOOLS = 60              # tools the model may keep at once (every spec is sent on every turn)
 MAX_TOOL_OUTPUT = 4000      # characters of a tool result fed back to the model
 MAX_STEPS = 16              # tool rounds per message, before it has to answer with what it has
@@ -136,6 +139,7 @@ def key_needed(names, why, tool=None):
             pass                                              # unreadable vault: the link still tells the owner what is missing
     link = f"{CONSOLE_URL}?need={','.join(names)}"
     what = ", ".join(f"`{n}`" for n in names)
+    activity(f"🔑 **waiting for a key** {what} · {why[:120]} · the console link went to the person")
     return (f"I need {what} for that ({why}). Add it here on the PC that runs me: {link}\n"
             f"The {'field is' if len(names) == 1 else 'fields are'} already waiting there, highlighted at the top; paste the value, save, "
             f"then tell me to try again.")
@@ -671,6 +675,8 @@ def _forge_worker(name, job, ctx):
         PENDING_BUILDS.pop(name, None)
     print(f"forge: `{name}` {'ready' if out.get('ok') else 'failed'} for {job.get('requested_by') or 'someone'}"
           + ("" if out.get("ok") else f": {str(out.get('failure'))[:160]}"), flush=True)
+    activity((f"✅ **forge finished** `{name}` · {str(out.get('summary') or '')[:140]}" if out.get("ok")
+              else f"❌ **forge failed** `{name}` · {str(out.get('failure') or '')[:160]}"), ctx.get("guild_id"))
     if ctx.get("loop") and ctx.get("send"):
         asyncio.run_coroutine_threadsafe(forge_followup(name, out, ctx), ctx["loop"])
 
@@ -1076,6 +1082,8 @@ async def first_day(bot, histories, guild=None, dry=False, force=False):
         state["welcomed"] = sorted(done)
         state_save(state)
         print(f"first day: posted to #{target.name} in {g.name}", flush=True)
+        seen = len(house.get("ssdp_devices") or []) + len(house.get("mdns_services") or [])
+        activity(f"👋 **first day** · introduced myself in #{target.name} · discovery {'found ' + str(seen) + ' device announcement(s)' if house.get('available') else 'off: ' + str(house.get('reason', ''))[:100]}", g.id)
         posted = text
     return posted
 
@@ -1117,6 +1125,7 @@ async def post_ideas(bot, histories, dry=False):
     (IDEAS_DIR / f"{record['date']}.json").write_text(json.dumps(record, indent=2), encoding="utf-8")
     (IDEAS_DIR / "latest.json").write_text(json.dumps(record, indent=2), encoding="utf-8")
     print(f"ideas: posted {len(result['ideas'])} idea(s) to #{target.name}", flush=True)
+    activity(f"💡 **daily review** · proposed {len(result['ideas'])} tool idea(s) in #{target.name}", getattr(target.guild, "id", None))
     return post
 
 
@@ -1225,24 +1234,35 @@ def dispatch(block, trusted, ctx=None):
         if name in PRIVILEGED and not trusted:
             raise ToolError("this person isn't allowed to change your tools or your machine; "
                             "answer with what you already have")
+        who, gid = (ctx or {}).get("who") or "someone", (ctx or {}).get("guild_id")
         if name == "create_tool":
+            replaced = code_path(str(args.get("name", ""))).exists()
             result, note = create_tool(**args), f"wrote `{args.get('name')}`"
+            activity(f"🔧 **{'rewrote' if replaced else 'new tool'}** `{args.get('name')}` · for {who} · {str(args.get('description', ''))[:100]}", gid)
         elif name == "request_tool":
             result, note = request_tool(**args, ctx=ctx), f"forged `{args.get('name')}`"
+            activity(f"⚒️ **forge {'repairing' if args.get('mode') == 'repair' else 'building'}** `{args.get('name')}` · for {who} · {str(args.get('brief', ''))[:120]}", gid)
         elif name == "read_tool":
             result, note = read_tool(**args), f"read `{args.get('name')}`"
         elif name == "delete_tool":
             result, note = delete_tool(**args), f"deleted `{args.get('name')}`"
+            activity(f"🗑️ **forgot** `{args.get('name')}` · asked by {who}", gid)
         elif name == "shell":
             result, note = shell(**args), "shell"
+            activity(f"💻 **shell** for {who} · `{str(args.get('command', ''))[:120]}`", gid)
         elif name == "install":
             result, note = install(**args), f"installed {', '.join(args.get('packages') or [])}"
+            activity(f"📦 **installed** {', '.join(args.get('packages') or [])} · for {who}", gid)
         elif name == "secrets":
             result, note = secrets_tool(**args), f"secrets {args.get('action', 'list')}"
+            if args.get("action") in ("set", "delete", "placeholder"):
+                activity(f"🔑 **secret {args.get('action')}** `{args.get('name')}` · by {who}", gid)          # names only, never values
         elif name == "attach_file":
             result, note = attach_file(**args, ctx=ctx), f"attached {os.path.basename(str(args.get('path', '')))}"
         elif name == "settings":
             result, note = settings_tool(**args, ctx=ctx), f"settings {args.get('action', 'get')}"
+            if args.get("action") not in (None, "get"):
+                activity(f"⚙️ **setting** {args.get('action')} {args.get('key', '')} {str(args.get('value', ''))[:60]} · by {who}", gid)
         else:
             result, note = run_tool(name, args), f"`{name}`"
             tool_health(name, ok=True)
@@ -1256,6 +1276,7 @@ def dispatch(block, trusted, ctx=None):
         detail = traceback.format_exc(limit=2).strip()
     if name not in META_NAMES and "?need=" not in detail:    # a generated tool failed for a reason other than a missing key
         detail += repair_hint(name, detail)
+        activity(f"⚠️ **`{name}` failed** · for {(ctx or {}).get('who') or 'someone'} · {detail.strip().splitlines()[0][:140]}", (ctx or {}).get("guild_id"))
     return ({"type": "tool_result", "tool_use_id": block.id, "content": clip(detail), "is_error": True},
             f"`{name}` failed")
 
@@ -1497,41 +1518,82 @@ def is_open_channel(channel):
     return bool(OPEN_CHANNELS) and (str(getattr(channel, "id", "")) in OPEN_CHANNELS or name in OPEN_CHANNELS)
 
 
-_home_locks = {}
+_own_locks = {}
 
 
-async def home_channel(guild):
-    """The bot's own text channel in this server, created if it does not exist yet (needs Manage Channels, which the
-    invite link grants). None when HOME_CHANNEL is empty or the channel cannot be made."""
-    if not HOME_CHANNEL:
+async def own_channel(guild, name, topic):
+    """One of the bot's own text channels in this server, created if it does not exist yet (needs Manage Channels, which
+    the invite link grants). None when the name is empty or the channel cannot be made."""
+    if not name:
         return None
 
     def find():
-        return next((c for c in guild.text_channels if c.name.lower() == HOME_CHANNEL), None)
+        return next((c for c in guild.text_channels if c.name.lower() == name), None)
     if find():
         return find()
-    # One creation per server at a time: two first-day runs racing here made two #bot channels once.
-    async with _home_locks.setdefault(guild.id, asyncio.Lock()):
+    # One creation per server and name at a time: two first-day runs racing here made two #bot channels once.
+    async with _own_locks.setdefault((guild.id, name), asyncio.Lock()):
         existing = find()
         if existing:
             return existing
         if not (guild.me and guild.me.guild_permissions.manage_channels):
-            print(f"home channel: cannot create #{HOME_CHANNEL} in {guild.name} (no Manage Channels permission)", flush=True)
+            print(f"channel: cannot create #{name} in {guild.name} (no Manage Channels permission)", flush=True)
             return None
         try:
             # a fresh fetch, not the cache: another process (bot.py --welcome) may have just made it
-            fresh = [c for c in await guild.fetch_channels() if getattr(c, "name", "").lower() == HOME_CHANNEL and c.type.name == "text"]
+            fresh = [c for c in await guild.fetch_channels() if getattr(c, "name", "").lower() == name and c.type.name == "text"]
             if fresh:
                 return fresh[0]
             general = guild.system_channel or next((c for c in guild.text_channels if c.name.lower() == "general"), None)
-            made = await guild.create_text_channel(HOME_CHANNEL, category=general.category if general else None,
-                                                   topic=f"Talk to {guild.me.display_name} here; no @mention needed.",
-                                                   reason="the bot's home channel")
-            print(f"home channel: created #{made.name} in {guild.name}", flush=True)
+            made = await guild.create_text_channel(name, category=general.category if general else None, topic=topic,
+                                                   reason="one of the bot's own channels")
+            print(f"channel: created #{made.name} in {guild.name}", flush=True)
             return made
         except Exception as e:  # noqa
-            print(f"home channel: could not create #{HOME_CHANNEL} in {guild.name}: {e}", flush=True)
+            print(f"channel: could not create #{name} in {guild.name}: {e}", flush=True)
             return None
+
+
+async def home_channel(guild):
+    return await own_channel(guild, HOME_CHANNEL, f"Talk to {guild.me.display_name if guild.me else 'the bot'} here; no @mention needed.")
+
+
+# ---------------------------------------------------------------- the activity log: what the bot does on its own, one line at a time
+
+_activity = {"bot": None, "loop": None}
+
+
+def activity(text, guild_id=None):
+    """One short line to #activity in every server (or the one given). Safe from any thread; never raises, never blocks:
+    the tool threads and the forge worker call this while the event loop keeps going."""
+    if not ACTIVITY_CHANNEL:
+        return
+    loop, bot = _activity["loop"], _activity["bot"]
+    if not loop or not bot or loop.is_closed():
+        print(f"activity (no channel yet): {text}", flush=True)
+        return
+    try:
+        asyncio.run_coroutine_threadsafe(_activity_post(bot, text, guild_id), loop)
+    except Exception as e:  # noqa
+        print(f"activity: could not schedule: {e}", flush=True)
+
+
+async def _activity_post(bot, text, guild_id=None):
+    for g in list(bot.guilds):
+        if guild_id and g.id != guild_id:
+            continue
+        ch = await own_channel(g, ACTIVITY_CHANNEL, f"{g.me.display_name if g.me else 'The bot'}'s running log: what it builds, uses and waits for.")
+        if not ch:
+            continue
+        try:
+            await ch.send(text[:1900], allowed_mentions=discord_no_mentions())
+        except Exception as e:  # noqa
+            print(f"activity: could not post to #{ch.name} in {g.name}: {e}", flush=True)
+
+
+def discord_no_mentions():
+    import discord
+    return discord.AllowedMentions.none()
 
 
 def run_discord(token):
@@ -1624,6 +1686,11 @@ def run_discord(token):
               f" | no mention needed in: {', '.join(sorted(OPEN_CHANNELS | ({HOME_CHANNEL} if HOME_CHANNEL else set()))) or 'nowhere'}", flush=True)
         if not getattr(bot, "_brain_started", False):
             bot._brain_started = True
+            _activity["bot"], _activity["loop"] = bot, asyncio.get_running_loop()
+            kit_n = len(tool_specs()) - len(META_TOOLS)
+            broken = sorted(health_load())
+            activity(f"🟢 **online** · {kit_n} tools · brain {brain_settings()[0]}/{brain_settings()[1]}"
+                     + (f" · failing lately: {', '.join(broken)}" if broken else ""))
             asyncio.create_task(brain_endpoint())
             asyncio.create_task(ideas_scheduler(bot, histories))     # checks its own on/off switch
             asyncio.create_task(first_day(bot, histories))           # once per server, on the first start that sees it
@@ -1667,7 +1734,7 @@ def run_discord(token):
                     await msg.channel.send((f"{msg.author.mention} " if i == 0 else "") + part, files=discord_files(files) if i == 0 else [])
         loop = asyncio.get_running_loop()
         ctx = {"who": msg.author.display_name, "trusted": trusted, "question": text_only, "hist": hist,
-               "loop": loop, "send": send_reply, "files": [],
+               "loop": loop, "send": send_reply, "files": [], "guild_id": msg.guild.id if msg.guild else None,
                "ideas_now": lambda: asyncio.run_coroutine_threadsafe(post_ideas(bot, histories), loop),
                "welcome_now": lambda: asyncio.run_coroutine_threadsafe(first_day(bot, histories, guild=msg.guild, force=True), loop)}
         extra = build_request_extra(text)             # "build 2" -> the saved notes behind idea 2 ride along for this turn
@@ -1684,6 +1751,9 @@ def run_discord(token):
             reply = "I couldn't reach the model API."
         entry["content"] = text_only          # images/PDFs are not resent on later turns; a text memo stands in
         hist.append({"role": "assistant", "content": reply})
+        used = [n.strip("`") for n in dict.fromkeys(notes) if re.fullmatch(r"`[a-z][a-z0-9_]*`", n)]   # kit tools this turn (meta tools log themselves)
+        if used and not (msg.guild and msg.channel.name.lower() == ACTIVITY_CHANNEL):
+            activity(f"🛠️ **used** {', '.join(used)} · for {msg.author.display_name} in #{getattr(msg.channel, 'name', 'DM')}", msg.guild.id if msg.guild else None)
         notes = attach_notes + notes
         if notes:
             reply += "\n-# " + ", ".join(dict.fromkeys(notes))   # Discord small text
