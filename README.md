@@ -245,6 +245,15 @@ docker compose logs -f dev
 Work folders are kept a week. If a tool comes out wrong, `RESULT.json` says what was tested, `claude-output.json`
 is the full run, and `previous/` holds the version a rebuilt tool replaced.
 
+### Its first day
+
+The first time the bot comes online in a server it looks at the house before saying hello: through the lan-helper it
+lists what answers on the network (TVs, speakers, casting targets, the router...), then posts one introduction: what it
+sees by name, two or three things it could do with those devices, two or three next steps for the owner (install the
+lan-helper if discovery was off, add ElevenLabs for a better voice, try a first question), and a closing line with
+three or four examples of tools it can build for this house. Once per server; "introduce yourself again" (the
+`settings` tool's `run_welcome`) or `python bot.py --welcome --dry` redo it.
+
 ### It keeps its tools working
 
 Tools break: an API changes, a device gets a new address. A failing tool comes back to the model with a hint to fix it

@@ -342,9 +342,9 @@ META_TOOLS.append({
                    "daily post proposing new tools), ideas_at (HH:MM local), ideas_channel (name or id; empty = the day's busiest channel), "
                    "brain_provider (claude, openai or deepseek - which model answers, applies to the next message; if its key is missing "
                    "you get a console link to relay and Claude keeps answering meanwhile), brain_model (a model id for that provider); "
-                   "'run_ideas' posts the daily ideas now. Use when an owner asks to switch the model, or to turn the daily ideas on or off.",
+                   "'run_ideas' posts the daily ideas now; 'run_welcome' redoes the first-day network look and introduction. Use when an owner asks to switch the model, turn the daily ideas on or off, or introduce yourself again.",
     "input_schema": {"type": "object", "properties": {
-        "action": {"type": "string", "enum": ["get", "set", "run_ideas"]},
+        "action": {"type": "string", "enum": ["get", "set", "run_ideas", "run_welcome"]},
         "key": {"type": "string", "enum": ["daily_ideas", "ideas_at", "ideas_channel", "brain_provider", "brain_model"]},
         "value": {"type": "string"}},
         "required": ["action"]},
@@ -800,6 +800,11 @@ def settings_tool(action="get", key=None, value=None, ctx=None):
             raise ToolError("cannot run the review from here (no Discord connection in this context)")
         ctx["ideas_now"]()
         return "running the daily review now; the post lands in a minute or so (or nothing, if the day gave no ideas)"
+    if action == "run_welcome":
+        if not (ctx or {}).get("welcome_now"):
+            raise ToolError("cannot run the introduction from here (no Discord connection in this context)")
+        ctx["welcome_now"]()
+        return "looking at the network again and posting a fresh introduction in a minute or so"
     if action != "set":
         raise ToolError("action must be get, set or run_ideas")
     s = settings_load()
@@ -935,6 +940,104 @@ def salvage_ideas_json(text):
     if out["ideas"] and out["post"]:                        # drop ideas the post no longer describes (it lists them by number)
         out["ideas"] = [x for x in out["ideas"] if f"`{x.get('name')}`" in out["post"] or not x.get("name")]
     return out
+
+
+# ---------------------------------------------------------------- first day: look at the house, say what you see, suggest what next
+
+STATE_FILE = Path("/data/state.json")            # {"welcomed": [guild ids]}
+FIRST_DAY_SYSTEM = """You are a household Discord bot that builds its own tools, posting your first message in a server you were just
+added to. You have just looked at the household network. Write the post people will read: warm, concrete, short (under
+1400 characters, plain Discord markdown, no headings), in this order:
+1. What you can see on the network, by name where you have one (TVs, speakers, casting targets, consoles, printers,
+   a router...), grouped, one or two lines. If discovery was not possible, say so in one line and say what turns it on.
+2. Two or three specific things you could do with those devices right now or after building a tool for them.
+3. Two or three suggested next steps for the owner, drawn from what is missing (e.g. install the lan-helper if
+   discovery was off, add ElevenLabs if there is no voice key, try "@bot what's the weather", tell the bot who lives here).
+4. Close with one line: "I can build tools for all sorts of things - " and 3-4 examples that fit this house and are not
+   already in the kit (e.g. TV control, wake-on-LAN, a shared shopping list, reminders, a pool or thermostat readout).
+No lists longer than four items. Do not mention internal file names, tokens or keys. Sign off as yourself, by name."""
+
+
+def state_load():
+    try:
+        return json.loads(STATE_FILE.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+
+
+def state_save(s):
+    STATE_FILE.parent.mkdir(parents=True, exist_ok=True)
+    STATE_FILE.write_text(json.dumps(s, indent=1), encoding="utf-8")
+
+
+def discover_house():
+    """What the lan tool can see, or why it cannot. Runs in a thread (the tool calls block)."""
+    if not code_path("lan").exists():
+        return {"available": False, "reason": "the lan tool is not in the kit"}
+    out = {"available": True}
+    for action, kw in (("mdns", {"timeout": 4}), ("ssdp", {"timeout": 4}), ("arp", {})):
+        try:
+            r = run_tool("lan", {"action": action, **kw})
+        except ToolError as e:
+            return {"available": False, "reason": str(e).strip().splitlines()[-1][:300]}   # the last line of a traceback is the message
+        if action == "mdns":
+            out["mdns_services"] = [{"instance": s.get("instance", "")[:60], "type": s.get("type"), "ip": s.get("ip")} for s in r.get("services", [])][:40]
+        elif action == "ssdp":
+            out["ssdp_devices"] = [{"ip": d.get("ip"), "server": (d.get("server") or "")[:50], "st": (d.get("st") or "")[:60]} for d in r.get("devices", [])][:40]
+        else:
+            out["lan_hosts"] = len([n for n in r.get("neighbours", []) if not n["ip"].endswith(".255")])
+    # named casting targets are the most human-readable thing we have
+    try:
+        g = run_tool("lan", {"action": "mdns", "service_type": "_googlecast._tcp.local", "timeout": 4})
+        out["cast_targets"] = sorted({next((t[3:] for t in (s.get("txt") or []) if t.startswith("fn=")), s.get("instance", "")[:30]) for s in g.get("services", [])})[:12]
+    except ToolError:
+        pass
+    return out
+
+
+async def first_day(bot, histories, guild=None, dry=False, force=False):
+    """The bot's first post in a server: what it found on the network, what it could do, what next. Once per server,
+    unless force (an owner asked for a fresh introduction)."""
+    guilds = [guild] if guild else list(bot.guilds)
+    state = state_load()
+    done = set(state.get("welcomed", []))
+    todo = [g for g in guilds if dry or force or str(g.id) not in done]
+    if not todo:
+        return None
+    house = await asyncio.to_thread(discover_house)
+    kit = [s["name"] for s in tool_specs()[len(META_TOOLS):]]
+    voice = bool(secret_env(["ELEVENLABS_API_KEY"]).get("ELEVENLABS_API_KEY"))
+    posted = None
+    for g in todo:
+        channels = [c.name for c in g.text_channels][:20]
+        prompt = (f"Server: {g.name}; text channels: {', '.join(channels)}; your name here: {g.me.display_name if g.me else bot.user.name}.\n"
+                  f"Network discovery result: {json.dumps(house)[:6000]}\n"
+                  f"Your tools right now: {', '.join(kit)}\nVoice: {'ElevenLabs key present' if voice else 'no ElevenLabs key (voice works locally but sounds robotic)'}\n"
+                  f"lan-helper (needed for discovery): {'working' if house.get('available') else 'not reachable - the owner installs it once with lan-helper/install-lan-helper.ps1 as administrator (README: Real LAN presence)'}")
+        try:
+            text = (await asyncio.to_thread(brain_complete, FIRST_DAY_SYSTEM, [{"role": "user", "content": prompt}], [], "medium")).text.strip()
+        except (brain.KeyMissing, brain.KeyRejected) as e:
+            text = key_needed([e.key], "I need the brain's key before I can introduce myself")
+        if not text:
+            continue
+        target = g.system_channel if g.system_channel and g.system_channel.permissions_for(g.me).send_messages else \
+            next((c for c in g.text_channels if c.permissions_for(g.me).send_messages), None)
+        if dry:
+            print(f"first day (dry run, would post to #{target.name if target else '?'} in {g.name}):\n{text}", flush=True)
+            posted = text
+            continue
+        if not target:
+            print(f"first day: no channel I can write in on {g.name}", flush=True)
+            continue
+        for part in chunk(text):
+            await target.send(part)
+        histories[target.id].append({"role": "assistant", "content": text})
+        done.add(str(g.id))
+        state["welcomed"] = sorted(done)
+        state_save(state)
+        print(f"first day: posted to #{target.name} in {g.name}", flush=True)
+        posted = text
+    return posted
 
 
 def find_channel(bot, wanted):
@@ -1392,7 +1495,8 @@ def run_discord(token):
             extra = VOICE_EXTRA if body.get("mode") == "voice" else ""
             loop = asyncio.get_running_loop()
             ctx = {"who": speaker, "trusted": trusted, "question": text, "hist": hist, "loop": loop, "files": [],
-                   "ideas_now": lambda: asyncio.run_coroutine_threadsafe(post_ideas(bot, histories), loop)}
+                   "ideas_now": lambda: asyncio.run_coroutine_threadsafe(post_ideas(bot, histories), loop),
+                   "welcome_now": lambda: asyncio.run_coroutine_threadsafe(first_day(bot, histories, force=True), loop)}
             extra += build_request_extra(text)
             if str(body.get("channel_id") or "").isdigit():      # where a forge follow-up (and any attached file) can be posted
                 channel_id = int(body["channel_id"])
@@ -1445,6 +1549,11 @@ def run_discord(token):
             bot._brain_started = True
             asyncio.create_task(brain_endpoint())
             asyncio.create_task(ideas_scheduler(bot, histories))     # checks its own on/off switch
+            asyncio.create_task(first_day(bot, histories))           # once per server, on the first start that sees it
+
+    @bot.event
+    async def on_guild_join(guild):
+        await first_day(bot, histories, guild=guild)
 
     @bot.event
     async def on_message(msg):
@@ -1482,7 +1591,8 @@ def run_discord(token):
         loop = asyncio.get_running_loop()
         ctx = {"who": msg.author.display_name, "trusted": trusted, "question": text_only, "hist": hist,
                "loop": loop, "send": send_reply, "files": [],
-               "ideas_now": lambda: asyncio.run_coroutine_threadsafe(post_ideas(bot, histories), loop)}
+               "ideas_now": lambda: asyncio.run_coroutine_threadsafe(post_ideas(bot, histories), loop),
+               "welcome_now": lambda: asyncio.run_coroutine_threadsafe(first_day(bot, histories, guild=msg.guild, force=True), loop)}
         extra = build_request_extra(text)             # "build 2" -> the saved notes behind idea 2 ride along for this turn
         try:
             async with typing_indicator(msg.channel):
@@ -1514,8 +1624,9 @@ def run_discord(token):
     bot.run(token, log_handler=None)
 
 
-def run_ideas_once(dry):
-    """`bot.py --ideas [--dry]`: a second, short-lived Discord login that reads the day, proposes, posts (or prints) and exits."""
+def run_ideas_once(dry, what="ideas"):
+    """`bot.py --ideas [--dry]` / `--welcome [--dry]`: a second, short-lived Discord login that does the one job, posts (or
+    prints) and exits."""
     import discord
     token = secret_env(["DISCORD_TOKEN"]).get("DISCORD_TOKEN")
     if not token:
@@ -1528,10 +1639,11 @@ def run_ideas_once(dry):
 
     @client.event
     async def on_ready():
+        hist = defaultdict(lambda: deque(maxlen=HISTORY_TURNS))
         try:
-            result["ideas"] = await post_ideas(client, defaultdict(lambda: deque(maxlen=HISTORY_TURNS)), dry=dry)
+            result["out"] = await (first_day(client, hist, dry=dry, force=True) if what == "welcome" else post_ideas(client, hist, dry=dry))
         except Exception as e:  # noqa
-            print(f"ideas failed: {type(e).__name__}: {e}", flush=True)
+            print(f"{what} failed: {type(e).__name__}: {e}", flush=True)
             result["error"] = True
         await client.close()
 
@@ -1566,6 +1678,8 @@ def main():
         return 0
     if "--ideas" in sys.argv:                      # run the daily review now; --dry prints instead of posting
         return run_ideas_once(dry="--dry" in sys.argv)
+    if "--welcome" in sys.argv:                    # the first-day network look and introduction, again
+        return run_ideas_once(dry="--dry" in sys.argv, what="welcome")
     try:                                           # say so plainly if the vault cannot be opened; secret_env would just fall back to env
         VAULT.load()
         print(f"vault: {VAULT.path} v{VAULT.version() or 0}, {len(VAULT.names())} secrets", flush=True)
