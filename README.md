@@ -51,6 +51,17 @@ containers, about half a minute of downtime. Kits, the vault, memory, uploads an
 they live outside the images (see "How code gets into the containers" below). `--check` looks without changing
 anything. To have it run by itself, point Task Scheduler or cron at the same script.
 
+### Branches
+
+| Branch | Who runs it | State |
+|---|---|---|
+| `dev` | nobody; scratch | anything, including broken |
+| `main` | the maintainer's own install | works, but new and unproven |
+| `stable` | every household | tried on a real install |
+
+Work on `dev`, merge into `main` when it hangs together, live with it on your own bot for a while, then release it to
+`stable`. A one-line fix can go straight to `main`; nothing goes straight to `stable` except through a release.
+
 ### Releasing (for whoever maintains the code)
 
 Work on `main` and try it on your own install. When a version is worth handing out:
