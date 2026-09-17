@@ -199,6 +199,13 @@
 </main>
 
 <script>
+if (location.protocol === "file:" || "__KEY__".startsWith("__")) {
+  // opened from disk, or served by something other than setup_web.py: none of the checks can work like this
+  document.querySelector("main").innerHTML = `<header><pre class="logo">NO CARRIER</pre>
+    <p class="help">This page only works when the installer serves it. It was opened as a file, so it cannot reach the setup server that does the checks and writes the configuration.</p>
+    <p class="help">Run <code>install.ps1</code> (Windows) or <code>./install.sh</code> in the repo folder; it starts the server and opens the right address, <code>http://localhost:8792/setup?key=…</code>, for you.<span class="cursor"></span></p></header>`;
+  throw new Error("setup page opened outside the installer");
+}
 const KEY = "__KEY__";
 const $ = (id) => document.getElementById(id);
 const api = (path, body) => fetch(path, { method: body ? "POST" : "GET", headers: { "content-type": "application/json", "X-Setup-Key": KEY }, body: body ? JSON.stringify(body) : undefined }).then(r => r.json());
