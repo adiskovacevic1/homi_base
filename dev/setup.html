@@ -61,6 +61,8 @@
     <div class="status" id="s-owners"></div>
     <label for="name">What the bot calls itself</label>
     <input id="name" placeholder="the house bot">
+    <label for="tz">Your timezone <span class="muted" style="font-weight:400">(for the daily ideas post and logs)</span></label>
+    <input id="tz" placeholder="America/Chicago">
   </section>
 
   <section>
@@ -134,6 +136,7 @@ async function init() {
   $("eleven").addEventListener("input", debounce(checkEleven, 500));
   $("owners").addEventListener("input", debounce(checkOwners, 600));
   $("kit").value = kitDefault(""); checkKit();
+  try { $("tz").value = Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC"; } catch { $("tz").value = "UTC"; }   // the browser knows
   if (state.config_exists) $("problems").textContent = "There is already a configuration on this PC. Saving will replace it (the tool kit is kept).";
 }
 const kitDefault = (name) => (name || "home").toLowerCase().replace(/[^a-z0-9-]+/g, "-").replace(/^-+|-+$/g, "") || "home";
@@ -198,7 +201,7 @@ async function saveAll() {
   $("problems").textContent = ""; $("submit").disabled = true; $("submit").textContent = "Saving…";
   const body = { token: $("token").value.trim(), anthropic: $("anthropic").value.trim(), owners: $("owners").value.trim(), name: $("name").value.trim(),
                  eleven: $("eleven").value.trim(), voice: $("eleven").value.trim() ? $("voice").value : "", auto: $("auto").value.trim(), kit: $("kit").value.trim(),
-                 kit_remote: $("kit_remote").value.trim(), app_id: state.discord?.app_id || "", keep_kit: $("keep_kit").checked };
+                 kit_remote: $("kit_remote").value.trim(), tz: $("tz").value.trim(), app_id: state.discord?.app_id || "", keep_kit: $("keep_kit").checked };
   const r = await api("/api/write", body);
   $("submit").disabled = false; $("submit").textContent = "Save and start the bot";
   if (!r.ok) { $("problems").textContent = (r.problems || [r.error || "something went wrong"]).join("\n"); return; }

@@ -13,7 +13,7 @@ Submit writes the same files through setup.write_files() and the server exits, s
 Env: SETUP_KEY (the one-time key; generated if missing), SETUP_PORT (8792), LAB_DIR (/lab), SETUP_SKIP_CHECKS=1 (tests only).
 Nothing here is stored or sent anywhere except the checks against the services whose keys you are entering.
 """
-import asyncio, os, secrets, sys
+import asyncio, os, re, secrets, sys
 from pathlib import Path
 
 import aiohttp
@@ -132,7 +132,9 @@ async def check(req):
 @guarded
 async def write(req):
     body = await req.json()
-    cfg = {k: cfgfile.clean(str(body.get(k) or "")) for k in ("token", "anthropic", "owners", "name", "eleven", "voice", "auto", "kit", "app_id", "kit_remote")}
+    cfg = {k: cfgfile.clean(str(body.get(k) or "")) for k in ("token", "anthropic", "owners", "name", "eleven", "voice", "auto", "kit", "app_id", "kit_remote", "tz")}
+    if not re.fullmatch(r"[A-Za-z_]+(/[A-Za-z0-9_+-]+)*", cfg["tz"] or ""):
+        cfg["tz"] = "UTC"
     problems = cfgfile.validate(cfg)
     kits = cfgfile.existing_kits()
     if kits.get(cfg["kit"]) and not body.get("keep_kit"):

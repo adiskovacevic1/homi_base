@@ -128,7 +128,9 @@ def write_files(cfg):
         "BRAIN_URL=http://example-bot:8790/ask",
         f"INTERNAL_TOKEN={internal}",
     ])
-    write_env(ROOT_ENV, ["# compose variables, written by bot-lab setup - git-ignored", f"KIT={kit}"])
+    tz = cfg.get("tz") or "UTC"
+    write_env(ROOT_ENV, ["# compose variables, written by bot-lab setup - git-ignored", f"KIT={kit}",
+                         "# local timezone for the containers (logs, the daily ideas post)", f"TZ={tz}"])
     kit_repo = init_kit_repo(KITS / kit, cfg.get("kit_remote", ""))
     return {"files": [str(p.relative_to(LAB)) for p in (BOT_ENV, VOICE_ENV, ROOT_ENV)], "kit": kit,
             "kit_tools": len(list((KITS / kit).glob("*.json"))), "kit_repo": kit_repo, "owners": owners, "name": name,
@@ -219,6 +221,8 @@ Paste with a RIGHT-CLICK in this window (Ctrl+V does not paste here). Secret val
         print("   pick a different name, then")
     cfg["kit"] = kit
     cfg["kit_remote"] = ask("Git URL to back the kit up to (optional, e.g. a private GitHub repo; Enter to skip)")
+    cfg["tz"] = ask("Your timezone, for the daily post and logs (e.g. America/Chicago, Europe/London)", "UTC",
+                    check=lambda v: re.fullmatch(r"[A-Za-z_]+(/[A-Za-z0-9_+-]+)*", v) is not None, hint="an IANA name like America/New_York")
 
     out = write_files(cfg)
     print("\nWrote", ", ".join(out["files"]), "; tool kit:", f"bots/example-bot/kits/{out['kit']}",
