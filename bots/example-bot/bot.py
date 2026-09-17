@@ -196,7 +196,10 @@ Writing one:
 - Module-level code runs on every call, so keep it to imports and constants; do the work inside run().
 - Each call runs in its own process, limited to {TOOL_TIMEOUT}s, with no access to this conversation.
 - Raise an exception with a clear message on bad input; you will see it and can fix the tool.
-- Prefer an existing tool to a near-duplicate. To repair one, read_tool it and create_tool the same name.
+- Prefer an existing tool to a near-duplicate. Tools break (an API changes, a device moves): when one fails in a
+  way that is not the caller's fault, fix it rather than working around it - read_tool and create_tool the same
+  name for a small fix, or request_tool with mode "repair" and the error for anything involved. A tool that has
+  failed the same way three times is broken, not misused; repair it before trying again. Keep the kit working.
 
 Your machine - you are root in your own Debian container, and `shell` and `install` are real:
 - Start from the Python 3.12 standard library, httpx and anthropic. Need more? `install` it: pip packages
@@ -319,7 +322,9 @@ if FORGE_ON:
             "inputs": {"type": "string", "description": "the arguments it should take, in words"},
             "secrets": {"type": "array", "items": {"type": "string"},
                         "description": "environment-variable names it will need (existing vault names or new ones)"},
-            "example_call": {"type": "object", "description": "the arguments you want to call it with right now; the agent tests with these"}},
+            "example_call": {"type": "object", "description": "the arguments you want to call it with right now; the agent tests with these"},
+            "mode": {"type": "string", "enum": ["build", "repair"], "description": "repair = fix the existing tool of this name; its current code and the error go to the agent"},
+            "error": {"type": "string", "description": "repair: the failure you saw (error text or traceback), and what call produced it"}},
             "required": ["name", "brief"]},
     })
 META_TOOLS.append({
@@ -594,7 +599,7 @@ def install(manager, packages):
 PENDING_BUILDS = {}          # tool name -> time the forge was asked; one build per name at a time
 
 
-def request_tool(name, brief, inputs=None, secrets=None, example_call=None, ctx=None):
+def request_tool(name, brief, inputs=None, secrets=None, example_call=None, ctx=None, mode="build", error=None):
     """Hand a brief to the forge on the dev box (dev/forge.py): a headless Claude Code writes the tool, tests it with a
     harness that behaves like this bot, installs the pair into /data/tools and commits it.
 
@@ -628,16 +633,24 @@ def request_tool(name, brief, inputs=None, secrets=None, example_call=None, ctx=
     job = {"name": name, "bot": BOT_NAME, "kit": KIT, "brief": str(brief), "inputs": str(inputs or ""),
            "secrets": [s for s in (secrets or []) if isinstance(s, str)],
            "example_call": example_call if isinstance(example_call, dict) else {},
-           "requested_by": ctx.get("who", ""), "available_secrets": available}
+           "requested_by": ctx.get("who", ""), "available_secrets": available, "mode": "build"}
+    if mode == "repair":                                     # the agent gets the current code and the failure, and fixes rather than rewrites
+        if not code_path(name).exists():
+            raise ToolError(f"there is no tool named `{name}` to repair; use mode build")
+        job.update({"mode": "repair", "existing_code": read_tool(name), "error": str(error or "")[:4000],
+                    "existing_spec": json.loads(spec_path(name).read_text(encoding="utf-8")) if spec_path(name).exists() else {}})
+        if not str(brief).strip():
+            job["brief"] = f"repair `{name}` so it works again; keep its purpose and interface"
     PENDING_BUILDS[name] = time.time()
     threading.Thread(target=_forge_worker, args=(name, job, ctx), daemon=True, name=f"forge-{name}").start()
     who = ctx.get("who") or "the person"
+    verb = "repair" if mode == "repair" else "build"
     if ctx.get("send"):
-        return (f"build of `{name}` started in the background; it usually takes one to three minutes. Reply to {who} with one "
+        return (f"{verb} of `{name}` started in the background; it usually takes one to three minutes. Reply to {who} with one "
                 f"short line - \"working on it, a couple of minutes\" - not an explanation of what you lack, then end your turn. "
                 f"You will be woken with the result and {who}'s original message.")
-    return (f"build of `{name}` started in the background (one to three minutes). There is no channel to follow up in from "
-            f"here, so tell {who} to ask again in a few minutes; the tool will be in your kit by then if the build succeeds.")
+    return (f"{verb} of `{name}` started in the background (one to three minutes). There is no channel to follow up in from "
+            f"here, so tell {who} to ask again in a few minutes; the tool will be in your kit by then if it succeeds.")
 
 
 def _forge_worker(name, job, ctx):
@@ -660,8 +673,9 @@ def _forge_worker(name, job, ctx):
 
 def forge_result_text(name, out, who, question):
     """The follow-up turn: not a person speaking, so it says so, and carries everything the model needs to act."""
-    status = "READY" if out.get("ok") else "FAILED"
-    lines = [f"[Follow-up from the forge - this is not a person speaking. The tool `{name}` you requested while answering {who} is {status}.]"]
+    repaired = out.get("mode") == "repair"
+    status = ("REPAIRED" if repaired else "READY") if out.get("ok") else ("NOT REPAIRED" if repaired else "FAILED")
+    lines = [f"[Follow-up from the forge - this is not a person speaking. The tool `{name}` you {'asked to have repaired' if repaired else 'requested'} while answering {who} is {status}.]"]
     if out.get("ok"):
         lines += [f"Summary: {out.get('summary')}", f"Tested: {out.get('tested')}", f"Notes for using it: {out.get('notes_for_model')}"]
         if out.get("apt_needed"):
@@ -867,7 +881,11 @@ def propose_ideas(transcript):
     """One model call, no tools: the day's transcript plus the current kit -> {"post", "ideas"} or None."""
     kit = "\n".join(f"- {s['name']}: {s['description'].splitlines()[0][:120]}" for s in tool_specs()[len(META_TOOLS):])
     prev = previously_proposed()
+    broken = {**{n: f"does not import: {e}" for n, e in check_tools().items()},
+              **{n: f"failed {h['fails']} times in a row since {h.get('since')}: {h.get('last_error', '')[:200]}" for n, h in health_load().items() if h.get("fails", 0) >= 2}}
+    broken_txt = "\n".join(f"- {n}: {why}" for n, why in broken.items())
     prompt = (f"Tools you already have:\n{kit or '(none yet)'}\n\n"
+              + (f"Tools that are BROKEN right now (propose repairing these first; a repair idea names the tool and quotes the failure):\n{broken_txt}\n\n" if broken else "")
               + (f"Previously proposed this week (skip unless there is new evidence): {', '.join(prev)}\n\n" if prev else "")
               + f"Conversation of the last {IDEAS_LOOKBACK_H} hours (YOU are your own messages):\n\n{transcript[-IDEAS_MAX_CHARS:]}")
     text = brain_complete(IDEAS_SYSTEM, [{"role": "user", "content": prompt}], [], "medium").text.strip()
@@ -1084,6 +1102,7 @@ def dispatch(block, trusted, ctx=None):
             result, note = settings_tool(**args, ctx=ctx), f"settings {args.get('action', 'get')}"
         else:
             result, note = run_tool(name, args), f"`{name}`"
+            tool_health(name, ok=True)
         content = result if isinstance(result, str) else json.dumps(result, default=str)
         return {"type": "tool_result", "tool_use_id": block.id, "content": clip(content)}, note
     except ToolError as e:
@@ -1092,8 +1111,60 @@ def dispatch(block, trusted, ctx=None):
         detail = f"bad arguments: {e}"
     except Exception:
         detail = traceback.format_exc(limit=2).strip()
+    if name not in META_NAMES and "?need=" not in detail:    # a generated tool failed for a reason other than a missing key
+        detail += repair_hint(name, detail)
     return ({"type": "tool_result", "tool_use_id": block.id, "content": clip(detail), "is_error": True},
             f"`{name}` failed")
+
+
+# ---------------------------------------------------------------- kit health: failures are remembered, so a broken tool gets repaired, not retried
+
+HEALTH_FILE = Path("/data/tool_health.json")      # {tool: {"fails": n, "last_error": "...", "since": "..."}}
+
+
+def health_load():
+    try:
+        return json.loads(HEALTH_FILE.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+
+
+def tool_health(name, ok, error=""):
+    """Consecutive failures per tool; a success clears them. Returns the count after this event."""
+    h = health_load()
+    if ok:
+        if name in h:
+            h.pop(name); HEALTH_FILE.write_text(json.dumps(h, indent=1), encoding="utf-8")
+        return 0
+    e = h.get(name, {"fails": 0, "since": time.strftime("%Y-%m-%d %H:%M")})
+    e["fails"] += 1; e["last_error"] = error[-400:]
+    h[name] = e
+    try:
+        HEALTH_FILE.write_text(json.dumps(h, indent=1), encoding="utf-8")
+    except OSError:
+        pass
+    return e["fails"]
+
+
+def repair_hint(name, error):
+    n = tool_health(name, ok=False, error=error)
+    if n >= 3:
+        return (f"\n\n`{name}` has now failed {n} times in a row - treat it as broken, not misused. Repair it: request_tool(name=\"{name}\", "
+                f"mode=\"repair\", error=<this error>, brief=<what it should do>) for anything involved, or read_tool + create_tool for a "
+                f"small fix. Tell the person you are fixing the tool.")
+    return ("\n\nIf this is the tool's fault rather than the call's, fix it rather than retrying: read_tool and create_tool the same "
+            "name for a small fix, or request_tool with mode=\"repair\" and this error for anything involved.")
+
+
+def check_tools():
+    """Import-test every tool in the kit the way the bot does at creation. Returns {name: error} for the broken ones."""
+    broken = {}
+    for spec in tool_specs()[len(META_TOOLS):]:
+        try:
+            run_tool(spec["name"], {}, selftest=True)
+        except ToolError as e:
+            broken[spec["name"]] = str(e)[-300:]
+    return broken
 
 
 # ---------------------------------------------------------------- talking to Claude
@@ -1480,6 +1551,9 @@ def main():
         name = sys.argv[sys.argv.index("--secret-get") + 1]
         v = vault_load().get(name)
         print(v["value"] if v else f"no secret named {name}", end="" if v else "\n"); return 0 if v else 1
+    if "--check-tools" in sys.argv:                # import-test the whole kit
+        broken = check_tools()
+        print(json.dumps({"tools": len(tool_specs()) - len(META_TOOLS), "broken": broken, "failing_lately": health_load()}, indent=1)); return 1 if broken else 0
     if "--tools" in sys.argv:
         for spec in tool_specs()[len(META_TOOLS):]:
             print(f"{spec['name']:<24} {spec['description'].splitlines()[0]}")
@@ -1510,6 +1584,9 @@ def main():
               "and install software in this container", flush=True)
     seed_starter_tools()
     replay_apt()
+    broken = check_tools()
+    if broken:
+        print(f"kit check: {len(broken)} tool(s) do not import - {', '.join(broken)} (the daily review proposes repairs; --check-tools lists errors)", flush=True)
     run_discord(token)
     return 0
 

@@ -317,18 +317,28 @@ def build(job):
     started = time.time()
     (work / "harness.py").write_text(HARNESS, encoding="utf-8")
     (work / "BRIEF.json").write_text(json.dumps(job, indent=2), encoding="utf-8")
+    repair = job.get("mode") == "repair" and job.get("existing_code")
+    if repair:                                               # the broken tool is the starting point, already in the work directory
+        (work / f"{name}.py").write_text(job["existing_code"], encoding="utf-8")
+        (work / f"{name}.json").write_text(json.dumps(job.get("existing_spec") or {"name": name}, indent=2), encoding="utf-8")
     prompt = PROMPT.format(work=work, name=name, requested_by=job.get("requested_by") or "someone in Discord",
-                           brief=job["brief"], inputs=job.get("inputs") or "your call - keep them minimal",
+                           brief=job["brief"], inputs=job.get("inputs") or ("keep the current inputs unless they are the problem" if repair else "your call - keep them minimal"),
                            example_call=json.dumps(job.get("example_call") or {}),
-                           secrets=", ".join(job.get("secrets") or []) or "none",
+                           secrets=", ".join(job.get("secrets") or []) or ("as declared in the existing spec" if repair else "none"),
                            available_secrets=", ".join(job.get("available_secrets") or []) or "none",
                            tools_dir=tools_dir, pylibs=pylibs, tool_timeout=TOOL_TIMEOUT, budget=max(2, CLAUDE_TIMEOUT // 60 - 1))
+    if repair:
+        prompt = (f"## REPAIR, not a new build\n`{name}.py` and `{name}.json` in this directory are the tool as it is now, and it is broken. "
+                  f"The failure the bot saw:\n```\n{job.get('error') or '(not recorded)'}\n```\nFix the tool. Keep its name, and keep its "
+                  f"inputs and outputs unless they are the cause; other tools and the bot's habits depend on them. Reproduce the failure "
+                  f"with the harness first if you can, then fix, then re-test with the example call. In RESULT.json say what was wrong "
+                  f"and what changed.\n\n") + prompt
     (work / "PROMPT.md").write_text(prompt, encoding="utf-8")
     pylibs.mkdir(parents=True, exist_ok=True)
     env = {**os.environ, "PYTHONUSERBASE": str(pylibs), "PYTHONDONTWRITEBYTECODE": "1"}
     auth = claude_auth(env)
 
-    out = {"ok": False, "status": "failed", "name": name, "work_dir": str(work)}
+    out = {"ok": False, "status": "failed", "name": name, "work_dir": str(work), "mode": job.get("mode", "build")}
     argv = ["claude", "-p", prompt, "--output-format", "json", "--max-turns", str(MAX_TURNS),
             "--allowedTools", *ALLOWED_TOOLS]
     log(f"building `{name}` for {bot} in {work.name} (auth: {auth})")
@@ -376,7 +386,7 @@ def build(job):
         log(f"`{name}` rejected after {out['seconds']}s: {e}")
         return out
     out["replaced"] = install_pair(work, name, spec, code, tools_dir)
-    out["ok"], out["status"] = True, "ready"
+    out["ok"], out["status"], out["mode"] = True, "ready", job.get("mode", "build")
     out["committed"], out["commit"] = git_commit(tools_dir, name, result, job.get("requested_by"))
     log(f"`{name}` ready in {out['seconds']}s, ${out.get('cost_usd', '?')}, {out['turns']} turns, commit={out['commit']}")
     return out
@@ -414,7 +424,10 @@ async def main():
                "secrets": [s for s in job.get("secrets") or [] if isinstance(s, str) and SECRET_NAME_RE.match(s)],
                "example_call": job.get("example_call") if isinstance(job.get("example_call"), dict) else {},
                "requested_by": str(job.get("requested_by") or ""),
-               "available_secrets": [s for s in job.get("available_secrets") or [] if isinstance(s, str)][:50]}
+               "available_secrets": [s for s in job.get("available_secrets") or [] if isinstance(s, str)][:50],
+               "mode": "repair" if job.get("mode") == "repair" else "build",
+               "existing_code": str(job.get("existing_code") or "")[:60000], "error": str(job.get("error") or "")[:4000],
+               "existing_spec": job.get("existing_spec") if isinstance(job.get("existing_spec"), dict) else {}}
         async with LOCK:
             try:
                 out = await asyncio.to_thread(build, job)

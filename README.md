@@ -245,6 +245,16 @@ docker compose logs -f dev
 Work folders are kept a week. If a tool comes out wrong, `RESULT.json` says what was tested, `claude-output.json`
 is the full run, and `previous/` holds the version a rebuilt tool replaced.
 
+### It keeps its tools working
+
+Tools break: an API changes, a device gets a new address. A failing tool comes back to the model with a hint to fix it
+rather than retry, and after three identical failures in a row it is told the tool is broken. Small fixes go through
+`read_tool` and `create_tool`; anything involved goes to the forge as a **repair**, `request_tool` with
+`mode: "repair"` and the error, and Claude Code starts from the current code and the failure instead of a blank page,
+keeping the tool's name and interface. Every tool is import-tested at startup and before the daily review, which
+proposes repairs first, with the failure as evidence; `docker compose exec example-bot python bot.py --check-tools`
+lists what is broken and what has been failing.
+
 ### It proposes its own next tools
 
 Once a day (`IDEAS_AT`, default 09:00 in the container's `TZ`; empty turns it off) the bot reads the last day of
