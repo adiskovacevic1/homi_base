@@ -14,7 +14,7 @@ on the way out. Tool calls and results come back in one shape regardless of prov
 Key names: ANTHROPIC_API_KEY, OPENAI_API_KEY, DEEPSEEK_API_KEY. A provider whose key is missing raises KeyMissing(name)
 before any network call, so the bot can send its key-needed reply.
 """
-import base64, json
+import base64, json, os
 from dataclasses import dataclass, field
 
 PROVIDERS = {
@@ -78,11 +78,27 @@ def complete(system, messages, tools, effort="medium", provider="claude", model=
 
 # ---------------------------------------------------------------- Claude
 
+# Anthropic runs web searches server-side when asked to: the model searches and reads pages inside one call, with
+# citations, billed per search. On by default; BRAIN_WEB_SEARCH=0 leaves Claude with the kit's web_search tool like the
+# other providers. Only the conversation gets it (calls that pass no tools, like the daily ideas, do not search).
+NATIVE_WEB_SEARCH = os.environ.get("BRAIN_WEB_SEARCH", "1").strip().lower() not in ("0", "off", "false", "no", "")
+NATIVE_WEB_SEARCH_MAX = int(os.environ.get("BRAIN_WEB_SEARCH_MAX", "5"))
+NATIVE_SEARCH_TOOL = {"type": "web_search_20250305", "name": "web_search", "max_uses": NATIVE_WEB_SEARCH_MAX}
+
+
+def _claude_tools(tools):
+    """The kit's tools, plus Anthropic's own search when it is on. The kit's web_search (there for the other providers)
+    steps aside then: tool names must be unique in a request, and the native one is the better of the two."""
+    if not tools or not NATIVE_WEB_SEARCH:
+        return tools
+    return [t for t in tools if t.get("name") != "web_search"] + [NATIVE_SEARCH_TOOL]
+
+
 def _complete_claude(client, system, messages, tools, effort, model, provider):
     import anthropic
     try:
         r = client.beta.messages.create(model=model, max_tokens=EFFORT_TOKENS.get(effort, 16000), system=system, messages=messages,
-                                        tools=tools, output_config={"effort": effort},
+                                        tools=_claude_tools(tools), output_config={"effort": effort},
                                         betas=["server-side-fallback-2026-07-01"], fallbacks="default")
     except anthropic.AuthenticationError as e:
         raise KeyRejected(provider, PROVIDERS[provider]["key"], str(e)[:120])
@@ -90,6 +106,7 @@ def _complete_claude(client, system, messages, tools, effort, model, provider):
         return Turn(stop="refusal", raw=r, provider=provider)
     text = "".join(b.text for b in r.content if b.type == "text").strip()
     calls = [{"id": b.id, "name": b.name, "input": dict(b.input or {})} for b in r.content if b.type == "tool_use"]
+    # pause_turn: a long server-side search loop was cut; what came back stands as the answer (the person can ask on)
     return Turn(text=text, tool_calls=calls, stop="tool_use" if r.stop_reason == "tool_use" else "end", raw=r, provider=provider)
 
 

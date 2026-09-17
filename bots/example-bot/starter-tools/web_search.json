@@ -1,0 +1,27 @@
+{
+  "name": "web_search",
+  "description": "Search the web (DuckDuckGo, no key) and get titles, links and snippets. Use it for anything current or anything you do not know: news, prices, opening hours, 'who is', 'how do I', product specs, error messages. Follow up with web_fetch on the best link to read the page. Returns {query, count, results:[{title,url,snippet}]}.",
+  "input_schema": {
+    "type": "object",
+    "properties": {
+      "query": {
+        "type": "string",
+        "description": "What to search for; plain words work best"
+      },
+      "limit": {
+        "type": "integer",
+        "description": "How many results, 1-20 (default 8)"
+      },
+      "region": {
+        "type": "string",
+        "description": "Optional region code like us-en, uk-en, de-de for local results"
+      },
+      "time_range": {
+        "type": "string",
+        "enum": ["", "d", "w", "m", "y"],
+        "description": "Optional recency: d = past day, w = week, m = month, y = year"
+      }
+    },
+    "required": ["query"]
+  }
+}

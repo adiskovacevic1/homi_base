@@ -172,6 +172,12 @@ DeepSeek alone therefore still gets a forge, a weaker one: it finishes fewer lon
 has no such endpoint, so with only an OpenAI key the forge is off and the bot builds small tools itself. The voice bot's
 offline fallback stays on Claude. `bots/example-bot/brain.py` is the one place that knows the providers.
 
+**The web.** Every brain reaches the web the same way, through tools: the starter kit has `web_search` (DuckDuckGo,
+no key: titles, links, snippets), `web_fetch` (read a page or an API), `youtube_search` and `weather`. Claude also
+gets Anthropic's own server-side search, which finds and reads pages inside one answer with citations, billed per
+search; when it is on (the default, `BRAIN_WEB_SEARCH=1`) the kit's `web_search` steps aside for Claude so tool names
+stay unique. DeepSeek and OpenAI have no browsing of their own here and use the kit's tools.
+
 ### It writes its own tools
 
 When a question needs something the bot can't do, it writes a Python tool for itself, calls it, and keeps
