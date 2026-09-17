@@ -90,7 +90,20 @@
   .invite:hover { background:var(--phos-soft); }
   .typed { overflow:hidden; white-space:nowrap; border-right:2px solid var(--phos); animation:typing 1.6s steps(40,end), blinkb .8s step-end infinite; }
   @keyframes typing { from { width:0 } to { width:100% } } @keyframes blinkb { 50% { border-color:transparent } }
-  @media (prefers-reduced-motion: reduce) { *, *::before, *::after { animation:none !important; transition:none !important; } .boot li { opacity:1; transform:none; } }
+  /* power off */
+  main.crt-off { transform-origin:50% 50%; animation:crtoff 1.3s cubic-bezier(.2,.7,.3,1) forwards; }
+  @keyframes crtoff {
+    0%   { transform:scale(1,1); filter:brightness(1); opacity:1; }
+    45%  { transform:scale(1.02,.012); filter:brightness(4) saturate(0); opacity:1; }
+    70%  { transform:scale(.6,.004); filter:brightness(6) saturate(0); opacity:1; }
+    85%  { transform:scale(.004,.004); filter:brightness(8); opacity:1; }
+    100% { transform:scale(0,0); opacity:0; }
+  }
+  body.dead { background:#000; animation:none; } body.dead::before, body.dead::after { display:none; }
+  #dead { display:none; position:fixed; inset:0; align-items:center; justify-content:center; color:#123a20; font:16px var(--mono); letter-spacing:1px; animation:deadfade 3s ease-in forwards; }
+  @keyframes deadfade { from { opacity:0 } to { opacity:1 } }
+  #shutdown a { color:var(--cyan); }
+  @media (prefers-reduced-motion: reduce) { *, *::before, *::after { animation:none !important; transition:none !important; } .boot li { opacity:1; transform:none; } main.crt-off { display:none; } #dead { opacity:1; } }
 </style>
 </head>
 <body class="flicker">
@@ -125,6 +138,15 @@
         <a id="invite-early" class="invite" target="_blank" rel="noopener" style="margin:0">▶ Invite the bot</a>
         <span class="status busy" id="s-guild" style="margin:0">waiting for the bot to appear in a server</span>
       </div>
+      <details id="newserver" style="margin-top:10px">
+        <summary class="help" style="cursor:pointer; display:inline-block">No server yet? Make one first →</summary>
+        <ol style="margin-top:8px">
+          <li>Open <a href="https://discord.com/channels/@me" target="_blank" rel="noopener">Discord</a> and click the <b>+</b> at the bottom of the server list on the left.</li>
+          <li><b>Create My Own</b> → <b>For me and my friends</b> → give it a name → <b>Create</b>. It comes with a <code>#general</code> text channel and a <code>General</code> voice channel, which is where the voice bot joins by default.</li>
+          <li>Come back here and click <b>Invite the bot</b> above; pick the new server in Discord's dialog.</li>
+        </ol>
+        <p class="help" style="margin:4px 0 0">Discord does not let bots create servers, so this part is yours; everything after it is automatic.</p>
+      </details>
       <div class="row" id="guildpick" style="display:none; margin-top:8px"><label for="guild" style="margin:0; white-space:nowrap">Server</label><select id="guild"></select></div>
     </div>
   </section>
@@ -194,9 +216,11 @@
     <h2 class="big typed">Configuration written. Bringing the bot up.</h2>
     <div id="summary"></div>
     <a id="invite" class="invite" target="_blank" rel="noopener" style="display:none">▶ Invite the bot to your server</a>
-    <p class="help">You can close this tab; the installer is starting the containers. Then @mention the bot in a channel. It answers with what it has, and when a question needs something new it has a tool built and follows up.</p>
+    <p class="help">The installer is starting the containers. Then @mention the bot in a channel. It answers with what it has, and when a question needs something new it has a tool built and follows up.</p>
+    <p class="status muted" id="shutdown" style="display:none"></p>
   </section>
 </main>
+<div id="dead" aria-hidden="true">signal lost · the bot is starting · you can close this tab</div>
 
 <script>
 if (location.protocol === "file:" || "__KEY__".startsWith("__")) {
@@ -379,6 +403,25 @@ async function saveAll() {
     Speech: ${esc(r.speech)} · voice channel auto-join: ${esc(r.auto_join)}<br>
     Files written: <code>${r.files.map(esc).join("</code>, <code>")}</code></p>`;
   if (r.invite) { $("invite").href = r.invite; $("invite").style.display = "inline-block"; }
+  powerDown(8);
+}
+
+// the CRT switches off: a countdown people can cancel, then the picture collapses to a line, a dot, and black
+let offTimer;
+function powerDown(seconds) {
+  const el = $("shutdown"); el.style.display = "block";
+  const tick = () => {
+    if (seconds <= 0) { crtOff(); return; }
+    el.innerHTML = `powering down in ${seconds}… <a href="#" onclick="keepScreen(); return false">keep this screen</a>`;
+    seconds--; offTimer = setTimeout(tick, 1000);
+  };
+  tick();
+}
+function keepScreen() { clearTimeout(offTimer); $("shutdown").textContent = "screen kept - close this tab whenever you like"; }
+function crtOff() {
+  document.body.classList.remove("flicker");
+  const m = document.querySelector("main"); m.classList.add("crt-off");
+  setTimeout(() => { document.body.classList.add("dead"); m.style.display = "none"; $("dead").style.display = "flex"; }, 1300);
 }
 async function cancelSetup() { if (!confirm("Stop the setup without saving?")) return; await api("/api/cancel", {}); document.body.innerHTML = "<main><header><pre class='logo'>SETUP ABORTED</pre><p class='help'>Nothing was written. Run the installer again when you are ready.<span class='cursor'></span></p></header></main>"; }
 const esc = (s) => String(s ?? "").replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));

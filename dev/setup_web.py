@@ -86,6 +86,10 @@ async def search_members(token, guild_id, query):
         return {"ok": True, "members": out}
 
 
+# Note: a bot cannot create a server (POST /guilds answers "Bots cannot use this endpoint"), so the "no server yet?" step on the
+# page is guidance that opens Discord for the person; the bot is invited afterwards like any other server.
+
+
 async def check_owners(token, ids):
     out = []
     async with aiohttp.ClientSession(headers={"Authorization": f"Bot {token}"}) as s:
