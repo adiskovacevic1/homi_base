@@ -12,8 +12,26 @@ docker info *> $null; if (-not $?) { Write-Host "Docker Desktop is installed but
 
 # The LAN helper first: it is what lets the bot see TVs, speakers and the rest of the house (containers cannot on Windows).
 # It needs one administrator approval; the rest of the install does not.
-if (Get-ScheduledTask -TaskName "homi lan-helper" -ErrorAction SilentlyContinue) {
-  Write-Host "LAN helper: already installed."
+$helperScript = Join-Path $PSScriptRoot "lan-helper\lan-helper.ps1"
+function Test-LanHelper { try { Invoke-WebRequest -UseBasicParsing "http://127.0.0.1:8793/health" -TimeoutSec 2 *> $null; $true } catch { $false } }
+$task = Get-ScheduledTask -TaskName "homi lan-helper" -ErrorAction SilentlyContinue
+if ($task -and $task.Actions[0].Arguments -notlike "*$helperScript*") {
+  # Registered by an install in another folder (moved, re-cloned): point it at this one, which is the same admin step as installing.
+  Write-Host "LAN helper: installed for another folder; re-registering for this one."
+  $task = $null
+}
+if ($task) {
+  if (Test-LanHelper) { Write-Host "LAN helper: already installed and running." }
+  else {
+    # Registered but not running: it starts at logon, so a fresh install into an existing registration finds it stopped.
+    Start-ScheduledTask -TaskName "homi lan-helper" -ErrorAction SilentlyContinue
+    if (-not (Test-Path "bots\example-bot\.env")) { Write-Host "LAN helper: already installed; started it (it answers once setup has written the shared token)." }
+    else {
+      $up = $false; for ($i = 0; $i -lt 20; $i++) { if (Test-LanHelper) { $up = $true; break }; Start-Sleep -Milliseconds 500 }
+      if ($up) { Write-Host "LAN helper: already installed; started it." }
+      else { Write-Host "LAN helper: installed but not answering on 8793. Check: Get-ScheduledTask 'homi lan-helper' | Get-ScheduledTaskInfo" -ForegroundColor Yellow }
+    }
+  }
 } else {
   Write-Host "LAN helper: installing (Windows will ask for administrator approval once)..."
   try {
