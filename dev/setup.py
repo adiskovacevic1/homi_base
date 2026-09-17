@@ -110,6 +110,9 @@ def write_files(cfg):
         "FORGE_TIMEOUT=480",
         "# this household's tool kit: bots/example-bot/kits/<KIT> is mounted at /data/tools (same name in the root .env for compose)",
         f"KIT={kit}",
+        "# daily review: the bot proposes 1-3 new tools in chat at this local time; empty = off. IDEAS_CHANNEL: name or id, empty = busiest",
+        "IDEAS_AT=09:00",
+        "IDEAS_CHANNEL=",
     ])
     write_env(VOICE_ENV, [
         "# written by bot-lab setup - git-ignored. Edit and `docker compose up -d voice-bot` to apply.",

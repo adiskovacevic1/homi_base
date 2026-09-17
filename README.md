@@ -176,6 +176,15 @@ docker compose logs -f dev
 Work folders are kept a week. If a tool comes out wrong, `RESULT.json` says what was tested, `claude-output.json`
 is the full run, and `previous/` holds the version a rebuilt tool replaced.
 
+### It proposes its own next tools
+
+Once a day (`IDEAS_AT`, default 09:00 in the container's `TZ`; empty turns it off) the bot reads the last day of
+every channel it can see, looks at its kit, and posts one to three concrete tool ideas grounded in what people
+asked for, tried, or hit a wall on, each with the moment that suggested it. It posts to `IDEAS_CHANNEL` or, unset,
+to the day's busiest channel, and the post joins that channel's memory, so replying **build 2** has the forge
+build that one. A quiet day produces nothing. `docker compose exec example-bot python bot.py --ideas --dry` runs
+the review now and prints it instead of posting.
+
 ### What it can reach
 
 The container runs as root, and Docker's network isolation is not a boundary against your LAN. From inside

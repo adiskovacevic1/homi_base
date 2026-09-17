@@ -29,10 +29,13 @@ Env (from .env):
   BOT_NAME            this bot's folder name under bots/, default example-bot
   KIT                 the household's tool kit: bots/<BOT_NAME>/kits/<KIT>/ is what compose mounts at /data/tools and where the
                       forge installs. setup.py writes the same name to the root .env for compose. Default "default".
+  IDEAS_AT            local time (HH:MM, container TZ) for the daily review that proposes 1-3 new tools in chat; default 09:00,
+                      empty = off. IDEAS_CHANNEL (name or id) says where; empty = the day's busiest channel.
 
 Test without Discord:
   python bot.py --ask "what's the 40th fibonacci number?"
   python bot.py --tools
+  python bot.py --ideas --dry        # the daily review now, printed instead of posted (logs in to Discord to read)
 """
 import asyncio, base64, contextlib, importlib.util, json, os, re, shutil, subprocess, sys, threading, time, traceback
 from collections import defaultdict, deque
@@ -626,6 +629,120 @@ def discord_files(files):
     return out
 
 
+# ---------------------------------------------------------------- daily ideas: the bot reviews its day and proposes tools to build
+
+IDEAS_AT = os.environ.get("IDEAS_AT", "09:00").strip()          # local time, HH:MM; empty = off
+IDEAS_CHANNEL = os.environ.get("IDEAS_CHANNEL", "").strip().lstrip("#").lower()   # name or id; empty = the day's busiest channel
+IDEAS_LOOKBACK_H = int(os.environ.get("IDEAS_LOOKBACK_H", "24"))
+IDEAS_MAX_CHARS = 60_000
+IDEAS_SYSTEM = """You are a Discord bot that builds its own tools, reviewing the last day of conversation in your server to propose
+new tools worth having. You can build almost anything: a tool is Python running as root in your own container on the
+household's LAN with internet, and a coding agent (the forge) can build and test the involved ones for you.
+
+Propose 1 to 3 tool ideas, grounded in what people actually asked for, tried, or hit a wall on - quote or paraphrase the
+moment that suggests each one. Also welcome: a tool that would have made an answer better or faster, or that removes a
+step people keep doing by hand. Do not propose anything that duplicates a tool you already have (the list is below), and
+do not propose vague platforms; each idea is one concrete tool with a name.
+
+Format, plain Discord markdown, short:
+**Tool ideas from the last day**
+1. **`snake_name`** - what it does in one line. _Why: ..._
+2. ...
+Reply **build 1** (or 2, 3) and I'll make it.
+
+If the day gives you nothing worth proposing, answer exactly NONE."""
+
+
+async def gather_day(bot, since):
+    """Recent messages from every text channel the bot can read: (channel, lines, count). Newest channels first by activity."""
+    per_channel = []
+    for guild in bot.guilds:
+        for ch in guild.text_channels:
+            me = guild.me or guild.get_member(bot.user.id)
+            perms = ch.permissions_for(me) if me else None
+            if not perms or not (perms.read_message_history and perms.view_channel):
+                continue
+            lines = []
+            try:
+                async for m in ch.history(after=since, limit=400, oldest_first=True):
+                    text = (m.content or "").strip()
+                    if m.attachments:
+                        text += " " + " ".join(f"[file: {a.filename}]" for a in m.attachments)
+                    if not text.strip():
+                        continue
+                    who = "YOU" if m.author.id == bot.user.id else m.author.display_name
+                    lines.append(f"[{m.created_at.strftime('%H:%M')}] {who}: {text[:400]}")
+            except Exception as e:  # noqa - one unreadable channel is not a reason to skip the day
+                print(f"ideas: could not read #{ch.name}: {type(e).__name__}", flush=True)
+                continue
+            if lines:
+                per_channel.append((ch, lines))
+    per_channel.sort(key=lambda t: len(t[1]), reverse=True)
+    return per_channel
+
+
+def propose_ideas(transcript, notes=""):
+    """One model call, no tools: the day's transcript plus the current kit -> the ideas post, or None."""
+    kit = "\n".join(f"- {s['name']}: {s['description'].splitlines()[0][:120]}" for s in tool_specs()[len(META_TOOLS):])
+    prompt = (f"Tools you already have:\n{kit or '(none yet)'}\n\n{notes}Conversation of the last {IDEAS_LOOKBACK_H} hours "
+              f"(YOU are your own messages):\n\n{transcript[-IDEAS_MAX_CHARS:]}")
+    r = get_client().messages.create(model=MODEL, max_tokens=900, system=IDEAS_SYSTEM,
+                                     messages=[{"role": "user", "content": prompt}], output_config={"effort": "medium"})
+    text = "".join(b.text for b in r.content if b.type == "text").strip()
+    return None if not text or text.upper().startswith("NONE") else text
+
+
+async def post_ideas(bot, histories, dry=False):
+    """Gather, propose, post to the chosen channel; the post joins that channel's history so 'build 2' works as a normal reply."""
+    import datetime
+    since = datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(hours=IDEAS_LOOKBACK_H)
+    day = await gather_day(bot, since)
+    if not day:
+        print("ideas: nothing said in the last day; skipping", flush=True)
+        return None
+    transcript = "\n\n".join(f"# {ch.name}\n" + "\n".join(lines) for ch, lines in day)
+    target = None
+    if IDEAS_CHANNEL:
+        for guild in bot.guilds:
+            target = next((c for c in guild.text_channels if str(c.id) == IDEAS_CHANNEL or c.name.lower() == IDEAS_CHANNEL), None) or target
+    if target is None:
+        target = day[0][0]                                     # the busiest channel of the day
+    ideas = await asyncio.to_thread(propose_ideas, transcript)
+    if not ideas:
+        print("ideas: the model found nothing worth proposing today", flush=True)
+        return None
+    if dry:
+        print(f"ideas (dry run, would post to #{target.name}):\n{ideas}", flush=True)
+        return ideas
+    for part in chunk(ideas):
+        await target.send(part)
+    histories[target.id].append({"role": "assistant", "content": ideas})
+    print(f"ideas: posted to #{target.name}", flush=True)
+    return ideas
+
+
+async def ideas_scheduler(bot, histories):
+    """Once a day at IDEAS_AT local time (the container's TZ). Sleeps until then; a failure is logged and the next day is tried."""
+    import datetime
+    try:
+        hh, mm = (int(x) for x in IDEAS_AT.split(":"))
+    except ValueError:
+        print(f"ideas: IDEAS_AT={IDEAS_AT!r} is not HH:MM; daily ideas off", flush=True)
+        return
+    while True:
+        now = datetime.datetime.now()
+        nxt = now.replace(hour=hh, minute=mm, second=0, microsecond=0)
+        if nxt <= now:
+            nxt += datetime.timedelta(days=1)
+        print(f"ideas: next review at {nxt:%Y-%m-%d %H:%M} ({IDEAS_CHANNEL or 'busiest channel'})", flush=True)
+        await asyncio.sleep((nxt - now).total_seconds())
+        try:
+            await post_ideas(bot, histories)
+        except Exception as e:  # noqa
+            print(f"ideas: failed: {type(e).__name__}: {str(e)[:200]}", flush=True)
+        await asyncio.sleep(61)                                # never twice in one minute
+
+
 STARTER_TOOLS = Path(os.environ.get("STARTER_TOOLS", "/app/starter-tools"))   # baked into the image from bots/example-bot/starter-tools
 
 
@@ -969,6 +1086,8 @@ def run_discord(token):
         if not getattr(bot, "_brain_started", False):
             bot._brain_started = True
             asyncio.create_task(brain_endpoint())
+            if IDEAS_AT:
+                asyncio.create_task(ideas_scheduler(bot, histories))
 
     @bot.event
     async def on_message(msg):
@@ -1035,6 +1154,31 @@ def run_discord(token):
     bot.run(token, log_handler=None)
 
 
+def run_ideas_once(dry):
+    """`bot.py --ideas [--dry]`: a second, short-lived Discord login that reads the day, proposes, posts (or prints) and exits."""
+    import discord
+    token = os.environ.get("DISCORD_TOKEN")
+    if not token:
+        print("DISCORD_TOKEN not set", flush=True)
+        return 1
+    intents = discord.Intents.default()
+    intents.message_content = True
+    client = discord.Client(intents=intents)
+    result = {}
+
+    @client.event
+    async def on_ready():
+        try:
+            result["ideas"] = await post_ideas(client, defaultdict(lambda: deque(maxlen=HISTORY_TURNS)), dry=dry)
+        except Exception as e:  # noqa
+            print(f"ideas failed: {type(e).__name__}: {e}", flush=True)
+            result["error"] = True
+        await client.close()
+
+    client.run(token, log_handler=None)
+    return 1 if result.get("error") else 0
+
+
 def main():
     if "--run-tool" in sys.argv:
         return _run_tool_child()
@@ -1053,6 +1197,8 @@ def main():
         if notes:
             print("used:", ", ".join(dict.fromkeys(notes)), file=sys.stderr)
         return 0
+    if "--ideas" in sys.argv:                      # run the daily review now; --dry prints instead of posting
+        return run_ideas_once(dry="--dry" in sys.argv)
     token = os.environ.get("DISCORD_TOKEN")
     if not token:
         print("DISCORD_TOKEN not set — idling. Put it in bots/example-bot/.env and restart the container.", flush=True)

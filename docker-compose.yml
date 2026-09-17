@@ -30,6 +30,8 @@ services:
     volumes:
       - ./bots/example-bot/data:/data   # runtime state: vault, uploads, pip libs, per-tool files (git-ignored)
       - ./bots/example-bot/kits/${KIT:-default}:/data/tools   # this household's tool kit, tracked in git; KIT comes from ./.env (setup.py writes it)
+    environment:
+      - TZ=${TZ:-UTC}                 # local time for the daily ideas post and logs; set TZ= in the root .env
     restart: unless-stopped
     networks: [botnet]
     deploy:
