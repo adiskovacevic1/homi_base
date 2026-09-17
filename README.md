@@ -40,6 +40,15 @@ discovery through the host helper) from
 install becomes its household's bot rather than a copy of someone else's. Re-run the installer any time to
 reconfigure.
 
+## Two bots on one PC
+
+Each bot is its own install folder (clone the repo twice), with its own Discord bot, vault and kit; the containers are
+named after the folder so they never collide. Two things are shared and handled for you: the console port (the second
+installer notices 8792 is taken and uses the next free one, recorded as `CONSOLE_PORT` in that folder's root `.env`,
+which `console.ps1` reads) and the LAN helper (one task serves every install on the PC and accepts each install's
+token; uninstalling one folder leaves it running for the others). Put the two bots in different Discord servers, or
+give the second different `HOME_CHANNEL` / `ACTIVITY_CHANNEL` names in its console, so they do not both answer in `#bot`.
+
 ## Uninstalling
 
 In the install folder:

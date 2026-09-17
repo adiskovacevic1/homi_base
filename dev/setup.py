@@ -23,6 +23,16 @@ RESTART_MARKER = LAB / ".restart-needed"              # the console leaves this 
 # Administrator: it makes its own channel, manages voice, and builds tools that may need any server permission later;
 # a household bot is trusted with the house, and re-inviting for every new permission is what people gave up on.
 INVITE_PERMS = 8
+
+
+def console_port():
+    """The port the console is published on, on this PC: the installer passes CONSOLE_PORT (a free one when 8792 is taken
+    by another install); a re-run keeps what the root .env says; else 8792."""
+    v = os.environ.get("CONSOLE_PORT", "").strip()
+    if not v.isdigit() and ROOT_ENV.exists():
+        m = re.search(r"^CONSOLE_PORT=(\d+)", ROOT_ENV.read_text(encoding="utf-8"), re.M)
+        v = m.group(1) if m else ""
+    return int(v) if v.isdigit() else 8792
 KIT_RE = re.compile(r"^[a-z][a-z0-9-]{1,40}$")
 # the model keys setup can take; in this order the first one given becomes the brain (Claude preferred: the forge uses it)
 BRAIN_KEYS = {"anthropic": ("ANTHROPIC_API_KEY", "claude"), "openai": ("OPENAI_API_KEY", "openai"), "deepseek": ("DEEPSEEK_API_KEY", "deepseek")}
@@ -237,7 +247,7 @@ def write_files(cfg):
         "FORGE_URL=http://bot-dev:8791",
         "FORGE_TIMEOUT=480",
         "# the owner's console on this PC (served by the dev box); the bot links people here when it needs a key added",
-        "CONSOLE_URL=http://127.0.0.1:8792/console",
+        f"CONSOLE_URL=http://127.0.0.1:{console_port()}/console",
         "# this household's tool kit: bots/example-bot/kits/<KIT> is mounted at /data/tools (same name in the root .env for compose)",
         f"KIT={kit}",
         "# daily review: the bot proposes 1-3 new tools in chat at this local time; empty = off. IDEAS_CHANNEL: name or id, empty = busiest",
@@ -256,7 +266,9 @@ def write_files(cfg):
     ])
     tz = cfg.get("tz") or "UTC"
     write_env(ROOT_ENV, ["# compose variables, written by bot-lab setup - git-ignored", f"KIT={kit}",
-                         "# local timezone for the containers (logs, the daily ideas post)", f"TZ={tz}"])
+                         "# local timezone for the containers (logs, the daily ideas post)", f"TZ={tz}",
+                         "# the console's port on this PC (127.0.0.1 only); the installer picks a free one when 8792 is taken by another bot",
+                         f"CONSOLE_PORT={console_port()}"])
     kit_repo = init_kit_repo(KITS / kit, cfg.get("kit_remote", ""))
     return {"files": [str(p.relative_to(LAB)) for p in (BOT_ENV, VOICE_ENV, ROOT_ENV)], "kit": kit,
             "kit_tools": len(list((KITS / kit).glob("*.json"))), "kit_repo": kit_repo, "owners": owners, "name": name,

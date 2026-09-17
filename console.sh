@@ -17,7 +17,8 @@ if [[ "${1:-}" == "--apply" ]]; then
 fi
 
 if ! docker compose ps --services --status running 2>/dev/null | grep -qx dev; then echo "Starting the dev box (it serves the console)..."; docker compose up -d dev >/dev/null; sleep 4; fi
-url="http://127.0.0.1:8792/console"
+port=$( [[ -f .env ]] && sed -n 's/^CONSOLE_PORT=\([0-9]*\).*/\1/p' .env | head -1 || true); port=${port:-8792}
+url="http://127.0.0.1:$port/console"
 { command -v pbcopy >/dev/null && printf '%s' "$url" | pbcopy; } 2>/dev/null || { command -v xclip >/dev/null && printf '%s' "$url" | xclip -selection clipboard; } 2>/dev/null || { command -v clip.exe >/dev/null && printf '%s' "$url" | clip.exe; } 2>/dev/null || true
 printf '\n  ============================================================\n'
 printf '   CONSOLE  (copied to your clipboard; log in with the vault passphrase)\n\n'

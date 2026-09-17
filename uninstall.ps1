@@ -33,11 +33,13 @@ Write-Host ""
 
 # 2. the LAN helper, only if its task points at this folder (another install may own it)
 $task = Get-ScheduledTask -TaskName "homi lan-helper" -ErrorAction SilentlyContinue
-if ($task -and $task.Actions[0].Arguments -like "*$here\lan-helper\lan-helper.ps1*") {
-  Write-Host "LAN helper: registered for this folder; removing (Windows will ask for administrator approval once)..."
+if ($task -and $task.Actions[0].Arguments -like "*$here\*") {
+  # this folder is either the one whose script runs the helper or one of the installs it serves; the helper installer
+  # keeps it running for any other install on this PC and removes it entirely otherwise
+  Write-Host "LAN helper: registered for this folder; removing this folder from it (Windows will ask for administrator approval once)..."
   try {
     $p = Start-Process -PassThru -Wait -Verb RunAs powershell.exe -ArgumentList "-NoProfile -ExecutionPolicy Bypass -File `"$here\lan-helper\install-lan-helper.ps1`" -Uninstall"
-    if ($p.ExitCode -eq 0) { Write-Host "LAN helper: removed (task, firewall rules, process)." }
+    if ($p.ExitCode -eq 0) { Write-Host "LAN helper: this folder removed from it (gone entirely if no other install on this PC uses it)." }
     else { Write-Host "LAN helper: removal returned exit $($p.ExitCode); run lan-helper\install-lan-helper.ps1 -Uninstall as administrator." -ForegroundColor Yellow }
   } catch { Write-Host "LAN helper: approval declined; run lan-helper\install-lan-helper.ps1 -Uninstall as administrator to remove it." -ForegroundColor Yellow }
 } elseif ($task) {

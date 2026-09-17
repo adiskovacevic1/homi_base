@@ -10,10 +10,44 @@ $Script = Join-Path $PSScriptRoot "lan-helper.ps1"
 $isAdmin = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
 if (-not $isAdmin) { Write-Host "Run this as Administrator (right-click PowerShell -> Run as administrator); it registers a logon task and a firewall rule."; exit 1 }
 
+# One helper serves every install on this PC: the task's -EnvFile lists each install's bots\example-bot\.env, and the helper
+# accepts any of their tokens. Installing from a second folder adds that folder; uninstalling removes only its own.
+$ThisEnv = Join-Path (Split-Path -Parent $PSScriptRoot) "bots\example-bot\.env"
+function Known-EnvFiles {
+  $t = Get-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue
+  if (-not $t) { return @() }
+  $args = [string]$t.Actions[0].Arguments
+  $list = @()
+  if ($args -match '-EnvFile "([^"]+)"') { $list = $matches[1] -split ";" }
+  elseif ($args -match '-File "([^"]+)\\lan-helper\\lan-helper\.ps1"') { $list = @(Join-Path $matches[1] "bots\example-bot\.env") }   # an older registration: one folder, implied
+  # only folders that still exist as installs
+  return @($list | ForEach-Object { $_.Trim() } | Where-Object { $_ -and (Test-Path (Join-Path (Split-Path -Parent (Split-Path -Parent (Split-Path -Parent $_))) "lan-helper\lan-helper.ps1")) })
+}
+function Stop-Helper { Get-CimInstance Win32_Process -Filter "Name = 'powershell.exe'" | Where-Object { $_.CommandLine -like "*lan-helper.ps1*" } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue } }
+function Register-Helper([string[]]$envFiles, [string]$scriptPath) {
+  $action = New-ScheduledTaskAction -Execute "$env:SystemRoot\System32\conhost.exe" -Argument "--headless powershell.exe -NoProfile -ExecutionPolicy Bypass -File `"$scriptPath`" -Port $Port -EnvFile `"$($envFiles -join ';')`""
+  $trigger = New-ScheduledTaskTrigger -AtLogOn -User $env:USERNAME
+  $settings = New-ScheduledTaskSettingsSet -RestartCount 999 -RestartInterval (New-TimeSpan -Minutes 1) -ExecutionTimeLimit (New-TimeSpan -Days 3650) -StartWhenAvailable -MultipleInstances IgnoreNew
+  Get-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue | Unregister-ScheduledTask -Confirm:$false
+  Register-ScheduledTask -TaskName $TaskName -Action $action -Trigger $trigger -Settings $settings -Description "The Discord bot's presence on the real LAN: wake-on-LAN, mDNS/SSDP discovery, UDP, for the containers." | Out-Null
+  Stop-Helper
+  Start-ScheduledTask -TaskName $TaskName
+  Start-Sleep -Seconds 3
+  if ((Get-ScheduledTask -TaskName $TaskName).State -ne "Running") { Start-ScheduledTask -TaskName $TaskName; Start-Sleep -Seconds 3 }
+}
+
 if ($Uninstall) {
+  $others = @(Known-EnvFiles | Where-Object { $_ -ne $ThisEnv })
+  if ($others) {
+    # another install on this PC still needs the helper: keep it, served from that install's copy of the script
+    $otherRoot = Split-Path -Parent (Split-Path -Parent (Split-Path -Parent $others[0]))
+    Register-Helper $others (Join-Path $otherRoot "lan-helper\lan-helper.ps1")
+    Write-Host "lan-helper: this folder removed from it; still running for $($others -join ', ')."; exit 0
+  }
   Get-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue | Unregister-ScheduledTask -Confirm:$false
   Get-NetFirewallRule -DisplayName $RuleName -ErrorAction SilentlyContinue | Remove-NetFirewallRule
-  Get-CimInstance Win32_Process -Filter "Name = 'powershell.exe'" | Where-Object { $_.CommandLine -like "*lan-helper.ps1*" } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force }
+  Get-NetFirewallRule -DisplayName "$RuleName discovery" -ErrorAction SilentlyContinue | Remove-NetFirewallRule
+  Stop-Helper
   Write-Host "lan-helper removed."; exit 0
 }
 
@@ -38,17 +72,10 @@ if ($lanRoute) { $prof = Get-NetConnectionProfile -InterfaceIndex $lanRoute.Inte
 # Logon task: PowerShell running the helper as this user with no console at all, restarted if it dies.
 # "-WindowStyle Hidden" is not enough: on Windows 11 the default console host is Windows Terminal, which opens a visible
 # window for the task anyway (and the owner then closes it, killing the helper). conhost --headless gives it no window.
-$action = New-ScheduledTaskAction -Execute "$env:SystemRoot\System32\conhost.exe" -Argument "--headless powershell.exe -NoProfile -ExecutionPolicy Bypass -File `"$Script`" -Port $Port"
-$trigger = New-ScheduledTaskTrigger -AtLogOn -User $env:USERNAME
-$settings = New-ScheduledTaskSettingsSet -RestartCount 999 -RestartInterval (New-TimeSpan -Minutes 1) -ExecutionTimeLimit (New-TimeSpan -Days 3650) -StartWhenAvailable -MultipleInstances IgnoreNew
-Get-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue | Unregister-ScheduledTask -Confirm:$false
-Register-ScheduledTask -TaskName $TaskName -Action $action -Trigger $trigger -Settings $settings -Description "The Discord bot's presence on the real LAN: wake-on-LAN, mDNS/SSDP discovery, UDP, for the containers." | Out-Null
-# A helper from an earlier registration (another folder, an older launcher) would keep the port; replace it with this one.
-Get-CimInstance Win32_Process -Filter "Name = 'powershell.exe'" | Where-Object { $_.CommandLine -like "*lan-helper.ps1*" } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }
-Start-ScheduledTask -TaskName $TaskName
-Start-Sleep -Seconds 3
-# a freshly registered task has been seen to stay in "Ready" after the first Start-ScheduledTask; ask once more if so
-if ((Get-ScheduledTask -TaskName $TaskName).State -ne "Running") { Start-ScheduledTask -TaskName $TaskName; Start-Sleep -Seconds 3 }
+# The env-file list keeps every other install on this PC that is still there, and adds this one.
+$envFiles = @(Known-EnvFiles | Where-Object { $_ -ne $ThisEnv }) + @($ThisEnv)
+if ($envFiles.Count -gt 1) { Write-Host "lan-helper: also serving $(($envFiles | Where-Object { $_ -ne $ThisEnv }) -join ', ')" }
+Register-Helper $envFiles $Script
 try { $h = Invoke-WebRequest -UseBasicParsing "http://127.0.0.1:$Port/health" -TimeoutSec 5; Write-Host "lan-helper is up: $($h.Content)" }
 catch {
   if (Test-Path (Join-Path (Split-Path -Parent $PSScriptRoot) "bots\example-bot\.env")) { Write-Host "registered, but the helper did not answer yet on port $Port. Check: Get-ScheduledTask '$TaskName' | Get-ScheduledTaskInfo" }

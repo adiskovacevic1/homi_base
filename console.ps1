@@ -18,7 +18,9 @@ if ($Apply) {
 
 $state = docker compose ps --services --status running 2>$null
 if ($state -notcontains "dev") { Write-Host "Starting the dev box (it serves the console)..."; docker compose up -d dev | Out-Null; Start-Sleep -Seconds 4 }
-$url = "http://127.0.0.1:8792/console"
+$port = 8792
+if (Test-Path ".env") { $m = Select-String -Path ".env" -Pattern '^CONSOLE_PORT=(\d+)' | Select-Object -First 1; if ($m) { $port = [int]$m.Matches[0].Groups[1].Value } }
+$url = "http://127.0.0.1:$port/console"
 try { Set-Clipboard -Value $url } catch {}
 Write-Host ""
 Write-Host "  ============================================================" -ForegroundColor Green

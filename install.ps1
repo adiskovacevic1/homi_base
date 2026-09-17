@@ -52,15 +52,25 @@ Write-Host "Building the three images (several minutes the first time; the voice
 docker compose build; if (-not $?) { exit 1 }
 Write-Host ""
 
+# The console's port on this PC: what this install already uses (root .env), else 8792, else the next free one, so a
+# second bot in another folder does not fight the first over the port. Setup records the choice in the root .env.
+$consolePort = 0
+if (Test-Path ".env") { $m = Select-String -Path ".env" -Pattern '^CONSOLE_PORT=(\d+)' | Select-Object -First 1; if ($m) { $consolePort = [int]$m.Matches[0].Groups[1].Value } }
+if (-not $consolePort) {
+  $consolePort = 8792
+  while (Get-NetTCPConnection -LocalPort $consolePort -State Listen -ErrorAction SilentlyContinue) { $consolePort += 10 }   # 8802, 8812, ... (8793 is the LAN helper)
+  if ($consolePort -ne 8792) { Write-Host "Console port: 8792 is taken (another bot on this PC?); this install uses $consolePort." }
+}
+
 if ($Terminal) {
-  docker compose run --rm --no-deps dev python /opt/forge/setup.py; if (-not $?) { exit 1 }
+  docker compose run --rm --no-deps -e CONSOLE_PORT=$consolePort dev python /opt/forge/setup.py; if (-not $?) { exit 1 }
 } else {
   $key = -join ((48..57) + (65..90) + (97..122) | Get-Random -Count 24 | ForEach-Object { [char]$_ })
-  $url = "http://127.0.0.1:8792/setup?key=$key"
-  $p = Start-Process -PassThru -NoNewWindow docker -ArgumentList "compose run --rm --no-deps -p 127.0.0.1:8792:8792 -e SETUP_KEY=$key dev python /opt/forge/setup_web.py"
+  $url = "http://127.0.0.1:$consolePort/setup?key=$key"
+  $p = Start-Process -PassThru -NoNewWindow docker -ArgumentList "compose run --rm --no-deps -p 127.0.0.1:${consolePort}:8792 -e SETUP_KEY=$key -e CONSOLE_PORT=$consolePort dev python /opt/forge/setup_web.py"
   $up = $false
   for ($i = 0; $i -lt 60; $i++) {
-    try { Invoke-WebRequest -UseBasicParsing "http://127.0.0.1:8792/health" -TimeoutSec 2 *> $null; $up = $true; break } catch { Start-Sleep -Milliseconds 500 }
+    try { Invoke-WebRequest -UseBasicParsing "http://127.0.0.1:$consolePort/health" -TimeoutSec 2 *> $null; $up = $true; break } catch { Start-Sleep -Milliseconds 500 }
   }
   try { Set-Clipboard -Value $url } catch {}
   Write-Host ""
