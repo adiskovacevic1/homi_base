@@ -207,6 +207,17 @@
     <p class="help" style="margin-top:6px">The kit becomes a small git repo either way, so every tool the bot builds is a commit. With a URL here it also has somewhere to push; run <code>git push -u origin main</code> in the kit folder when you want it backed up.</p>
   </section>
 
+  <section data-step="EXISTING" id="existing" style="display:none; border-color:var(--amber)">
+    <h2 style="color:var(--amber); text-shadow:none">A configuration already exists on this PC</h2>
+    <p class="help">Saving replaces the bot's token, keys and settings with what is on this page. The current files are backed up
+      first as <code>.env.bak-&lt;time&gt;</code>, and the vault key and internal token are kept, so the secrets the bot's tools
+      already use keep working. If you only wanted a look, use <b>abort</b>.</p>
+    <div class="kit-existing" style="display:block">
+      <label><input type="checkbox" id="replace"> Replace the existing configuration</label>
+      <label><input type="checkbox" id="fresh_secrets"> Also generate a new vault key (the stored secrets become unreadable; only for a truly fresh start)</label>
+    </div>
+  </section>
+
   <div class="actions">
     <!-- named saveAll/cancelSetup, not submit/cancel: inside a <form>, inline handlers see the form's own methods first -->
     <button type="button" onclick="cancelSetup()">abort</button>
@@ -310,8 +321,9 @@ async function boot() {
   const li = await add("scanning for an existing configuration<span class='cursor'></span>", 500);
   state = { ...state, ...(await api("/api/state")) };
   li.innerHTML = state.config_exists
-    ? "<span class='warn'>[!!]</span> a configuration exists on this PC — saving replaces it (the tool kit is kept)"
+    ? "<span class='warn'>[!!]</span> a configuration exists on this PC — saving needs an explicit tick at the bottom; abort to leave it alone"
     : "<span class='ok'>[OK]</span> fresh install — no configuration yet";
+  if (state.config_exists) { $("existing").style.display = "block"; $("submit").textContent = "▶ Replace and restart bot"; }
   const kits = Object.keys(state.kits);
   await add(kits.length ? `<span class='ok'>[OK]</span> kits on disk: ${kits.map(k => `<b>${esc(k)}</b> (${state.kits[k]} tools)`).join(", ")}` : "<span class='ok'>[OK]</span> no tool kits yet — a new one starts with the nine basics", 400);
   await add("<span class='ok'>[OK]</span> awaiting operator input<span class='cursor'></span>", 400);
@@ -440,7 +452,8 @@ async function saveAll() {
   $("problems").textContent = ""; $("submit").disabled = true; $("submit").textContent = "writing…";
   const body = { token: $("token").value.trim(), anthropic: $("anthropic").value.trim(), owners: $("owners").value.trim(), name: $("name").value.trim(),
                  eleven: $("eleven").value.trim(), voice: $("eleven").value.trim() ? $("voice").value : "", auto: $("auto").value.trim(), kit: $("kit").value.trim(),
-                 kit_remote: $("kit_remote").value.trim(), tz: $("tz").value.trim(), app_id: state.discord?.app_id || "", keep_kit: $("keep_kit").checked };
+                 kit_remote: $("kit_remote").value.trim(), tz: $("tz").value.trim(), app_id: state.discord?.app_id || "", keep_kit: $("keep_kit").checked,
+                 replace: $("replace").checked, fresh_secrets: $("fresh_secrets").checked };
   const r = await api("/api/write", body);
   $("submit").disabled = false; $("submit").textContent = "▶ Initialize bot";
   if (!r.ok) { $("problems").textContent = (r.problems || [r.error || "something went wrong"]).join("\n"); return; }
@@ -448,7 +461,7 @@ async function saveAll() {
   $("summary").innerHTML = `<p>Bot: <b>${esc(state.discord?.name || r.name)}</b> · owner(s): <code>${esc(r.owners)}</code><br>
     Tool kit: <code>bots/example-bot/kits/${esc(r.kit)}</code> ${r.kit_tools ? `(${r.kit_tools} tools)` : "(new — the starter tools are added on first start)"} — ${esc(r.kit_repo)}<br>
     Speech: ${esc(r.speech)} · voice channel auto-join: ${esc(r.auto_join)}<br>
-    Files written: <code>${r.files.map(esc).join("</code>, <code>")}</code></p>`;
+    Files written: <code>${r.files.map(esc).join("</code>, <code>")}</code>${r.backups?.length ? `<br>Previous configuration backed up: <code>${r.backups.map(esc).join("</code>, <code>")}</code>${r.kept_secrets?.length ? " · kept " + r.kept_secrets.join(" and ") : ""}` : ""}</p>`;
   if (r.invite) { $("invite").href = r.invite; $("invite").style.display = "inline-block"; }
   powerDown(8);
 }

@@ -77,17 +77,51 @@ def validate(cfg):
     return problems
 
 
+def env_values(path):
+    """{NAME: value} from an existing env file; {} if none."""
+    out = {}
+    try:
+        for line in path.read_text(encoding="utf-8", errors="replace").splitlines():
+            m = re.match(r"^([A-Z][A-Z0-9_]*)=(.*)$", line.strip())
+            if m:
+                out[m.group(1)] = m.group(2).strip()
+    except OSError:
+        pass
+    return out
+
+
+def backup_existing():
+    """Before overwriting: copy each existing env file to <name>.bak-<timestamp> beside it (git-ignored like the original).
+    A reconfigure that goes wrong is then a copy away from undone. Returns the backup paths."""
+    import shutil, time
+    stamp = time.strftime("%Y%m%d-%H%M%S")
+    made = []
+    for p in (BOT_ENV, VOICE_ENV, ROOT_ENV):
+        if p.exists():
+            b = p.with_name(f"{p.name}.bak-{stamp}")
+            shutil.copy2(p, b)
+            made.append(str(b.relative_to(LAB)))
+    return made
+
+
 def write_files(cfg):
-    """cfg keys: token, anthropic, owners (comma-separated), name, eleven, voice, auto, kit, app_id (optional).
-    Writes the three env files, creates the kit folder (empty -> the bot seeds the starter tools), returns a summary."""
+    """cfg keys: token, anthropic, owners (comma-separated), name, eleven, voice, auto, kit, app_id (optional), kit_remote,
+    tz, fresh_secrets (optional, default False: an existing VAULT_KEY and INTERNAL_TOKEN are kept, so the vault the
+    bot's tools already use survives a reconfigure).
+    Backs up existing env files, writes the three new ones, creates the kit folder (empty -> the bot seeds the starter
+    tools), returns a summary."""
     problems = validate(cfg)
     if problems:
         raise ValueError("; ".join(problems))
     name = cfg.get("name") or "the house bot"
     owners = ",".join(p.strip() for p in cfg["owners"].split(",") if p.strip())
     kit, eleven, voice, auto = cfg["kit"], cfg.get("eleven", ""), cfg.get("voice", ""), cfg.get("auto", "")
-    internal = secrets.token_urlsafe(32)
-    vault = base64.urlsafe_b64encode(os.urandom(32)).decode()   # a Fernet key
+    old = env_values(BOT_ENV)
+    backups = backup_existing()
+    keep = bool(old) and not cfg.get("fresh_secrets")
+    internal = old.get("INTERNAL_TOKEN") if keep and old.get("INTERNAL_TOKEN") else secrets.token_urlsafe(32)
+    vault = old.get("VAULT_KEY") if keep and old.get("VAULT_KEY") else base64.urlsafe_b64encode(os.urandom(32)).decode()   # a Fernet key
+    kept = [n for n in ("VAULT_KEY", "INTERNAL_TOKEN") if keep and old.get(n)]
     wake = "hey bot," + ",".join(w for w in dict.fromkeys([name.lower(), name.lower().replace(" ", "")]) if w and w != "hey bot")
 
     write_env(BOT_ENV, [
@@ -135,7 +169,7 @@ def write_files(cfg):
     return {"files": [str(p.relative_to(LAB)) for p in (BOT_ENV, VOICE_ENV, ROOT_ENV)], "kit": kit,
             "kit_tools": len(list((KITS / kit).glob("*.json"))), "kit_repo": kit_repo, "owners": owners, "name": name,
             "speech": "ElevenLabs" if eleven else "local (whisper + Piper)", "auto_join": auto or "off",
-            "invite": invite_url(cfg.get("app_id", ""))}
+            "invite": invite_url(cfg.get("app_id", "")), "backups": backups, "kept_secrets": kept}
 
 
 def init_kit_repo(kit_dir, remote=""):
@@ -183,7 +217,10 @@ def main():
         sys.exit("run this through install.sh or install.ps1 - the repo has to be mounted at /lab")
     print("\nbot-lab setup\n" + "-" * 60)
     if config_exists():
-        if ask("There is already a configuration here. Overwrite it? (yes/no)", "no").lower() not in ("y", "yes"):
+        print("There is already a configuration on this PC. Replacing it means re-entering the token and keys.\n"
+              "The old files are backed up beside the new ones (.env.bak-<time>), and the vault key and internal token are kept\n"
+              "so the bot's stored secrets keep working.")
+        if ask("Type REPLACE to go on, anything else to keep what is there", "keep") != "REPLACE":
             print("Kept the existing .env files.")
             return 0
     print("""
@@ -227,6 +264,8 @@ Paste with a RIGHT-CLICK in this window (Ctrl+V does not paste here). Secret val
     out = write_files(cfg)
     print("\nWrote", ", ".join(out["files"]), "; tool kit:", f"bots/example-bot/kits/{out['kit']}",
           f"({out['kit_tools']} tools)" if out["kit_tools"] else "(empty - the starter tools are seeded on first start)", "-", out["kit_repo"])
+    if out["backups"]:
+        print("Previous configuration backed up to:", ", ".join(out["backups"]), "| kept:", ", ".join(out["kept_secrets"]) or "nothing")
     if out["invite"]:
         print(f"\nInvite the bot to your server with this link:\n  {out['invite']}")
     print(f"""

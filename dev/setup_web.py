@@ -180,7 +180,11 @@ async def write(req):
     cfg = {k: cfgfile.clean(str(body.get(k) or "")) for k in ("token", "anthropic", "owners", "name", "eleven", "voice", "auto", "kit", "app_id", "kit_remote", "tz")}
     if not re.fullmatch(r"[A-Za-z_]+(/[A-Za-z0-9_+-]+)*", cfg["tz"] or ""):
         cfg["tz"] = "UTC"
+    cfg["fresh_secrets"] = bool(body.get("fresh_secrets"))
     problems = cfgfile.validate(cfg)
+    if cfgfile.config_exists() and not body.get("replace"):
+        problems.append("a configuration already exists on this PC; tick 'replace the existing configuration' to overwrite it "
+                        "(it is backed up first, and the vault key is kept)")
     kits = cfgfile.existing_kits()
     if kits.get(cfg["kit"]) and not body.get("keep_kit"):
         problems.append(f"kits/{cfg['kit']} already has {kits[cfg['kit']]} tools; confirm it is this household's kit or pick another name")
