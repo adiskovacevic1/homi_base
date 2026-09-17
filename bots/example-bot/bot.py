@@ -1462,25 +1462,41 @@ def is_open_channel(channel):
     return bool(OPEN_CHANNELS) and (str(getattr(channel, "id", "")) in OPEN_CHANNELS or name in OPEN_CHANNELS)
 
 
+_home_locks = {}
+
+
 async def home_channel(guild):
     """The bot's own text channel in this server, created if it does not exist yet (needs Manage Channels, which the
     invite link grants). None when HOME_CHANNEL is empty or the channel cannot be made."""
     if not HOME_CHANNEL:
         return None
-    existing = next((c for c in guild.text_channels if c.name.lower() == HOME_CHANNEL), None)
-    if existing:
-        return existing
-    if not (guild.me and guild.me.guild_permissions.manage_channels):
-        print(f"home channel: cannot create #{HOME_CHANNEL} in {guild.name} (no Manage Channels permission)", flush=True)
-        return None
-    try:
-        made = await guild.create_text_channel(HOME_CHANNEL, topic=f"Talk to {guild.me.display_name} here; no @mention needed.",
-                                               reason="the bot's home channel")
-        print(f"home channel: created #{made.name} in {guild.name}", flush=True)
-        return made
-    except Exception as e:  # noqa
-        print(f"home channel: could not create #{HOME_CHANNEL} in {guild.name}: {e}", flush=True)
-        return None
+
+    def find():
+        return next((c for c in guild.text_channels if c.name.lower() == HOME_CHANNEL), None)
+    if find():
+        return find()
+    # One creation per server at a time: two first-day runs racing here made two #bot channels once.
+    async with _home_locks.setdefault(guild.id, asyncio.Lock()):
+        existing = find()
+        if existing:
+            return existing
+        if not (guild.me and guild.me.guild_permissions.manage_channels):
+            print(f"home channel: cannot create #{HOME_CHANNEL} in {guild.name} (no Manage Channels permission)", flush=True)
+            return None
+        try:
+            # a fresh fetch, not the cache: another process (bot.py --welcome) may have just made it
+            fresh = [c for c in await guild.fetch_channels() if getattr(c, "name", "").lower() == HOME_CHANNEL and c.type.name == "text"]
+            if fresh:
+                return fresh[0]
+            general = guild.system_channel or next((c for c in guild.text_channels if c.name.lower() == "general"), None)
+            made = await guild.create_text_channel(HOME_CHANNEL, category=general.category if general else None,
+                                                   topic=f"Talk to {guild.me.display_name} here; no @mention needed.",
+                                                   reason="the bot's home channel")
+            print(f"home channel: created #{made.name} in {guild.name}", flush=True)
+            return made
+        except Exception as e:  # noqa
+            print(f"home channel: could not create #{HOME_CHANNEL} in {guild.name}: {e}", flush=True)
+            return None
 
 
 def run_discord(token):
@@ -1570,7 +1586,7 @@ def run_discord(token):
     @bot.event
     async def on_ready():
         print(f"online as {bot.user} | brain={brain_settings()[0]}/{brain_settings()[1]} | tools={len(tool_specs()) - len(META_TOOLS)}"
-              f" | no mention needed in: {', '.join(sorted(OPEN_CHANNELS)) or 'nowhere'}", flush=True)
+              f" | no mention needed in: {', '.join(sorted(OPEN_CHANNELS | ({HOME_CHANNEL} if HOME_CHANNEL else set()))) or 'nowhere'}", flush=True)
         if not getattr(bot, "_brain_started", False):
             bot._brain_started = True
             asyncio.create_task(brain_endpoint())
