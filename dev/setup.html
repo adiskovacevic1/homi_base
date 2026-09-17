@@ -465,13 +465,19 @@ function powerDown(seconds) {
   tick();
 }
 function keepScreen() { clearTimeout(offTimer); $("shutdown").textContent = "screen kept - close this tab whenever you like"; }
-function crtOff() {
+function crtOff(finalText) {
   soundOff(1.2);
+  if (finalText) $("dead").textContent = finalText;
   document.body.classList.remove("flicker");
   const m = document.querySelector("main"); m.classList.add("crt-off");
   setTimeout(() => { document.body.classList.add("dead"); m.style.display = "none"; $("dead").style.display = "flex"; }, 1300);
 }
-async function cancelSetup() { if (!confirm("Stop the setup without saving?")) return; await api("/api/cancel", {}); document.body.innerHTML = "<main><header><pre class='logo'>SETUP ABORTED</pre><p class='help'>Nothing was written. Run the installer again when you are ready.<span class='cursor'></span></p></header></main>"; }
+async function cancelSetup() {
+  if (!confirm("Stop the setup without saving?")) return;
+  clearTimeout(offTimer);
+  crtOff("signal aborted · nothing was written · run the installer again when you are ready");
+  await api("/api/cancel", {});
+}
 const esc = (s) => String(s ?? "").replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 init();
 </script>
