@@ -142,8 +142,12 @@ def secrets_tool(action="list", name=None, value=None, note=None):
 
 TOOL_GUIDE = f"""
 
-You can extend yourself. When answering needs something you can't do, write a tool with create_tool and
-then call it. It stays available afterwards, including after a restart, so you build up a kit over time.
+You can extend yourself. When answering needs something you can't do yet, build the tool and do the thing:
+create_tool for something small, request_tool for anything bigger. Never tell a person you can't do
+something, and never ask whether they would like a tool built - a missing tool is not a limitation, it is
+the next step. Say "working on it" if it will take a moment, then get on with it. Tools stay available
+afterwards, including after a restart, so you build up a kit over time. When a reply used tools you built
+during this request, end it with one line naming them, e.g. "New tool: `lg_tv` (LG TV control)."
 
 Writing one:
 - `code` must define a top-level `run(**kwargs)` taking your input_schema's properties and *returning* a
@@ -173,10 +177,11 @@ FORGE_GUIDE = """
 Bigger tools: create_tool is for something you can get right in one go. When a tool must talk to a device or a
 service, needs auth, or should be tested against the real thing, use request_tool instead - a coding agent on
 the dev box writes it, runs it against the real target, fixes it and installs it, usually in one to three
-minutes. request_tool starts that build in the background and returns at once: tell the person in one line that
-you are having the tool built and will follow up here when it is done, then end your turn - do not wait, poll or
-try to write the tool yourself meanwhile. When the build finishes you get a follow-up turn with the result, the
-notes on using the tool and the person's original message; answer it then. Give request_tool a real brief (what,
+minutes. request_tool starts that build in the background and returns at once: reply with one short line like
+"Working on it - give me a couple of minutes" (do not explain that you lack a tool or ask permission to build one),
+then end your turn - do not wait, poll or try to write the tool yourself meanwhile. When the build finishes you get
+a follow-up turn with the result, the notes on using the tool and the person's original message; do what they asked
+then, and end that reply with a line naming the new tool. Give request_tool a real brief (what,
 when, what to return, anything you already learned) and the example_call you want to make. If the forge is
 unreachable, fall back to create_tool.
 """
@@ -502,9 +507,9 @@ def request_tool(name, brief, inputs=None, secrets=None, example_call=None, ctx=
     threading.Thread(target=_forge_worker, args=(name, job, ctx), daemon=True, name=f"forge-{name}").start()
     who = ctx.get("who") or "the person"
     if ctx.get("send"):
-        return (f"build of `{name}` started in the background; it usually takes one to three minutes. Tell {who} in one line "
-                f"that you are having this tool built and will follow up here when it is done, then end your turn. You will be "
-                f"woken with the result and {who}'s original message.")
+        return (f"build of `{name}` started in the background; it usually takes one to three minutes. Reply to {who} with one "
+                f"short line - \"working on it, a couple of minutes\" - not an explanation of what you lack, then end your turn. "
+                f"You will be woken with the result and {who}'s original message.")
     return (f"build of `{name}` started in the background (one to three minutes). There is no channel to follow up in from "
             f"here, so tell {who} to ask again in a few minutes; the tool will be in your kit by then if the build succeeds.")
 
@@ -545,8 +550,10 @@ def forge_result_text(name, out, who, question):
             lines.append(f"Notes: {out.get('notes_for_model')}")
     lines.append(f"{who}'s original message was: \"{(question or '').strip()[:1500]}\"")
     if out.get("ok"):
-        lines.append(f"Now call `{name}` to answer {who}'s original message and reply to them by name, as a normal message. "
-                     f"If the tool errors, say what happened. Do not use request_tool in this turn.")
+        lines.append(f"Now call `{name}` to do what {who} originally asked and reply to them by name, as a normal message - lead "
+                     f"with the result, not with the fact that a tool was built. End the reply with one line naming what is new, "
+                     f"e.g. \"New tool: `{name}` ({(out.get('summary') or 'what it does')[:60]})\". If the tool errors, say what "
+                     f"happened. Do not use request_tool in this turn.")
     else:
         lines.append(f"Tell {who} briefly that the build did not work out and why; answer another way if you can "
                      f"(create_tool for a simpler version, or existing tools), otherwise say what would be needed. "
