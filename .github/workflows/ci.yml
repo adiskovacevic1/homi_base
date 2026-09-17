@@ -1,0 +1,88 @@
+# Runs on every push to a working branch and on every pull request into dev or main. Nothing here needs a secret:
+# the checks that touch Discord, Anthropic or a LAN stay out of CI on purpose.
+name: ci
+on:
+  push:
+    branches: [dev, main, "feature/**"]
+  pull_request:
+    branches: [dev, main]
+  workflow_dispatch:
+
+jobs:
+  checks:
+    name: secrets guard, syntax, tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with: { fetch-depth: 0 }
+
+      - name: Nothing that belongs to a household is committed
+        run: bash scripts/check-no-secrets.sh
+
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.12" }
+      - name: Python parses
+        run: python -m compileall -q bots/example-bot dev tests && echo "all python compiles"
+      - name: Vault and setup tests
+        run: |
+          pip install -q pytest cryptography
+          pytest -q tests
+
+      - uses: actions/setup-node@v4
+        with: { node-version: "22" }
+      - name: Voice bot parses
+        run: cd bots/voice-bot && node --check index.js && echo "index.js parses"
+      - name: Setup page script parses
+        run: |
+          python - <<'EOF'
+          import re, pathlib, subprocess
+          html = pathlib.Path("dev/setup.html").read_text(encoding="utf-8")
+          js = "\n".join(re.findall(r"<script>(.*?)</script>", html, re.S))
+          pathlib.Path("/tmp/setup-inline.js").write_text(js, encoding="utf-8")
+          subprocess.run(["node", "--check", "/tmp/setup-inline.js"], check=True)
+          print("setup.html inline script parses")
+          EOF
+
+      - name: Shell scripts parse
+        run: for f in $(git ls-files '*.sh'); do bash -n "$f" && echo "$f ok"; done
+      - name: PowerShell scripts parse
+        shell: pwsh
+        run: |
+          foreach ($f in (git ls-files '*.ps1')) { $null = [scriptblock]::Create((Get-Content -Raw $f)); "$f ok" }
+
+  images:
+    name: build the bot and dev images, start the stack
+    runs-on: ubuntu-latest
+    needs: checks
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - name: Build example-bot and dev (the voice image is nightly - its speech model is 2 GB)
+        run: docker compose build example-bot dev
+      - name: The bot image imports and its vault module works
+        run: |
+          docker compose run --rm --no-deps -T -e VAULT_PASSPHRASE=ci-passphrase -e VAULT_FILE=/tmp/v.enc example-bot python -c "
+          import bot, vault
+          v = vault.Vault('/tmp/v.enc', passphrase='ci-passphrase'); v.set('A_KEY', 'x')
+          assert v.get('A_KEY') == 'x'
+          print('bot imports; tools offered:', sorted(bot.META_NAMES))"
+      - name: The stack starts with no configuration and idles cleanly
+        run: |
+          docker compose up -d example-bot dev
+          sleep 15
+          docker compose ps
+          docker compose logs example-bot dev
+          docker compose logs example-bot | grep -q "idling" || { echo "example-bot did not reach its idle state"; exit 1; }
+          docker compose logs dev | grep -q "forge idle" || { echo "dev box did not reach its idle state"; exit 1; }
+          if docker compose logs | grep -q "Traceback"; then echo "a container logged a traceback"; exit 1; fi
+          echo "both containers up and idle, no tracebacks"
+      - name: The setup server serves its page and refuses without the key
+        run: |
+          docker compose run --rm --no-deps -d -p 127.0.0.1:8792:8792 -e SETUP_KEY=cikey -e SETUP_SKIP_CHECKS=1 -e LAB_DIR=/tmp/lab dev sh -c "mkdir -p /tmp/lab/bots/example-bot/kits /tmp/lab/bots/voice-bot && python /opt/forge/setup_web.py"
+          for i in $(seq 1 30); do curl -fs http://127.0.0.1:8792/health >/dev/null && break; sleep 1; done
+          test "$(curl -s -o /dev/null -w '%{http_code}' 'http://127.0.0.1:8792/setup?key=cikey')" = 200
+          test "$(curl -s -o /dev/null -w '%{http_code}' 'http://127.0.0.1:8792/api/state')" = 403
+          curl -s -H 'X-Setup-Key: cikey' http://127.0.0.1:8792/api/state | grep -q '"mode"'
+          echo "setup page up, key enforced"
+      - if: always()
+        run: docker compose down -v --remove-orphans

@@ -1,0 +1,32 @@
+# Once a night, and on demand: the full build including the voice image (a 2 GB speech model, too slow for every push),
+# plus the voice bot's own self-test on local speech. Runs against main; a failure here means main is not fit to release.
+name: nightly
+on:
+  schedule:
+    - cron: "0 9 * * *"      # 09:00 UTC
+  workflow_dispatch:
+
+jobs:
+  full-build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with: { ref: main }
+      - uses: docker/setup-buildx-action@v3
+      - name: Build all three images
+        run: docker compose build
+      - name: Voice image has working ears and mouth (no keys, no Discord)
+        run: |
+          docker compose run --rm --no-deps -T voice-bot sh -c '
+            node --check index.js && echo "index.js parses" &&
+            piper --version &&
+            python3 -c "from faster_whisper import WhisperModel; WhisperModel(\"base.en\", device=\"cpu\", compute_type=\"int8\"); print(\"whisper loads\")"'
+      - name: The whole stack starts with no configuration
+        run: |
+          docker compose up -d
+          sleep 20
+          docker compose ps
+          docker compose logs voice-bot | grep -qE "idling|online" || { docker compose logs voice-bot; exit 1; }
+          if docker compose logs | grep -q "Traceback"; then docker compose logs; exit 1; fi
+      - if: always()
+        run: docker compose down -v --remove-orphans

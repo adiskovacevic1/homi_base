@@ -66,7 +66,14 @@ git branch -d feature/short-name && git push origin --delete feature/short-name
 
 `--no-ff` keeps the feature visible as one unit in the history.
 
-**6. Promoting is not your call.** `dev` → `main` happens when a set of changes hangs together; `main` → `stable`
+**6. CI decides whether it merges.** Every push to a `feature/**` branch, `dev` or `main` runs `.github/workflows/ci.yml`:
+the secrets guard, parse checks for every language in the repo, the vault and setup tests in `tests/`, a build of the
+bot and dev images, and a start of the stack with no configuration. Do not merge red into `dev`, and if `dev` is red
+after your merge, that is yours to fix now. Run the same checks locally before pushing: `bash scripts/check-no-secrets.sh`
+and `pytest tests` (or the equivalent inside the dev image). The voice image builds nightly, and a push to `stable`
+tags a release.
+
+**7. Promoting is not your call.** `dev` → `main` happens when a set of changes hangs together; `main` → `stable`
 happens through `./release.sh`, which lists what would reach every install and asks for confirmation. Do not push to
 `stable`, ever, and do not force-push any shared branch.
 
