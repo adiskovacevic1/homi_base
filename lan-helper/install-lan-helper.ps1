@@ -23,7 +23,13 @@ function Known-EnvFiles {
   # only folders that still exist as installs
   return @($list | ForEach-Object { $_.Trim() } | Where-Object { $_ -and (Test-Path (Join-Path (Split-Path -Parent (Split-Path -Parent (Split-Path -Parent $_))) "lan-helper\lan-helper.ps1")) })
 }
-function Stop-Helper { Get-CimInstance Win32_Process -Filter "Name = 'powershell.exe'" | Where-Object { $_.CommandLine -like "*lan-helper.ps1*" } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue } }
+function Stop-Helper {
+  # only the helper itself ("\lan-helper.ps1"), never this installer ("\install-lan-helper.ps1" also ends in lan-helper.ps1,
+  # and matching it once made the installer kill itself right after registering the task)
+  Get-CimInstance Win32_Process -Filter "Name = 'powershell.exe'" |
+    Where-Object { $_.ProcessId -ne $PID -and $_.CommandLine -like "*\lan-helper.ps1*" -and $_.CommandLine -notlike "*install-lan-helper.ps1*" } |
+    ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }
+}
 function Register-Helper([string[]]$envFiles, [string]$scriptPath) {
   $action = New-ScheduledTaskAction -Execute "$env:SystemRoot\System32\conhost.exe" -Argument "--headless powershell.exe -NoProfile -ExecutionPolicy Bypass -File `"$scriptPath`" -Port $Port -EnvFile `"$($envFiles -join ';')`""
   $trigger = New-ScheduledTaskTrigger -AtLogOn -User $env:USERNAME
