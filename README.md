@@ -181,9 +181,14 @@ is the full run, and `previous/` holds the version a rebuilt tool replaced.
 Once a day (`IDEAS_AT`, default 09:00 in the container's `TZ`; empty turns it off) the bot reads the last day of
 every channel it can see, looks at its kit, and posts one to three concrete tool ideas grounded in what people
 asked for, tried, or hit a wall on, each with the moment that suggested it. It posts to `IDEAS_CHANNEL` or, unset,
-to the day's busiest channel, and the post joins that channel's memory, so replying **build 2** has the forge
-build that one. A quiet day produces nothing. `docker compose exec example-bot python bot.py --ideas --dry` runs
-the review now and prints it instead of posting.
+to the day's busiest channel. Behind the post it saves working notes for each idea under `data/ideas/`: the evidence
+from the transcript and a brief a coding agent could build from. Replying **build 2** hands those notes for idea 2
+to the model, even hours later when the post has scrolled out of memory, and it goes straight to the forge with a
+brief grounded in what actually went wrong. Ideas proposed in the last week are not repeated without new evidence.
+A quiet day produces nothing. Owners control it in chat through the `settings` tool ("turn off the daily ideas",
+"move the ideas post to 8pm in #general", "post today's ideas now"); the switches live in `data/settings.json` and
+take effect without a restart. `docker compose exec example-bot python bot.py --ideas --dry` runs the review now
+and prints it, notes included, instead of posting.
 
 ### What it can reach
 

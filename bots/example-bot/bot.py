@@ -153,6 +153,9 @@ afterwards, including after a restart, so you build up a kit over time. When a r
 during this request, end it with one line naming them, e.g. "New tool: `lg_tv` (LG TV control)."
 You can send files: have a tool save its output under /data (an image, a chart, a CSV, a report, a log) and
 call attach_file with the path; it is uploaded with your reply. Never say you cannot upload or attach files.
+Once a day you post a few tool ideas drawn from the day's conversation. Owners can turn that off or on, move it,
+or ask for it now through your `settings` tool. "build 2" after such a post means: build idea 2 - you will be
+given its details.
 
 Writing one:
 - `code` must define a top-level `run(**kwargs)` taking your input_schema's properties and *returning* a
@@ -289,9 +292,20 @@ META_TOOLS.append({
         "note": {"type": "string", "description": "optional caption, shown with the file"}},
         "required": ["path"]},
 })
+META_TOOLS.append({
+    "name": "settings",
+    "description": "Owner-only switches for the bot itself. action 'get' shows them; 'set' changes one: daily_ideas (true/false - the "
+                   "daily post proposing new tools), ideas_at (HH:MM local), ideas_channel (name or id; empty = the day's busiest channel); "
+                   "'run_ideas' posts the daily ideas now. Use when someone asks to turn the daily ideas on or off, move them, or see them now.",
+    "input_schema": {"type": "object", "properties": {
+        "action": {"type": "string", "enum": ["get", "set", "run_ideas"]},
+        "key": {"type": "string", "enum": ["daily_ideas", "ideas_at", "ideas_channel"]},
+        "value": {"type": "string"}},
+        "required": ["action"]},
+})
 META_NAMES = {t["name"] for t in META_TOOLS}
 # Tools that act on the machine rather than the conversation; limited to TOOL_CREATORS.
-PRIVILEGED = {"create_tool", "request_tool", "delete_tool", "shell", "install", "secrets"}
+PRIVILEGED = {"create_tool", "request_tool", "delete_tool", "shell", "install", "secrets", "settings"}
 UPLOAD_MAX = int(os.environ.get("DISCORD_UPLOAD_MAX_MB", "10")) * 1024 * 1024   # Discord's limit for a server without boosts
 UPLOAD_MAX_FILES = 10
 
@@ -631,26 +645,83 @@ def discord_files(files):
 
 # ---------------------------------------------------------------- daily ideas: the bot reviews its day and proposes tools to build
 
-IDEAS_AT = os.environ.get("IDEAS_AT", "09:00").strip()          # local time, HH:MM; empty = off
+IDEAS_AT = os.environ.get("IDEAS_AT", "09:00").strip()          # default local time, HH:MM; empty = off. settings.json overrides
 IDEAS_CHANNEL = os.environ.get("IDEAS_CHANNEL", "").strip().lstrip("#").lower()   # name or id; empty = the day's busiest channel
 IDEAS_LOOKBACK_H = int(os.environ.get("IDEAS_LOOKBACK_H", "24"))
 IDEAS_MAX_CHARS = 60_000
+IDEAS_DIR = Path("/data/ideas")                 # latest.json + one file per day: the post and the working notes behind each idea
+SETTINGS_FILE = Path("/data/settings.json")     # owner-changeable switches (the `settings` tool); env values are the defaults
 IDEAS_SYSTEM = """You are a Discord bot that builds its own tools, reviewing the last day of conversation in your server to propose
 new tools worth having. You can build almost anything: a tool is Python running as root in your own container on the
 household's LAN with internet, and a coding agent (the forge) can build and test the involved ones for you.
 
-Propose 1 to 3 tool ideas, grounded in what people actually asked for, tried, or hit a wall on - quote or paraphrase the
-moment that suggests each one. Also welcome: a tool that would have made an answer better or faster, or that removes a
-step people keep doing by hand. Do not propose anything that duplicates a tool you already have (the list is below), and
-do not propose vague platforms; each idea is one concrete tool with a name.
+Propose 1 to 3 tool ideas, grounded in what people actually asked for, tried, or hit a wall on. Also welcome: a tool that
+would have made an answer better or faster, or that removes a step people keep doing by hand. Do not propose anything that
+duplicates a tool you already have, do not repeat a previously proposed idea unless the day brought new evidence for it,
+and do not propose vague platforms; each idea is one concrete tool with a name.
 
-Format, plain Discord markdown, short:
+Answer with JSON only, no prose around it:
+{"post": "<the Discord message people see>", "ideas": [{"n": 1, "name": "snake_name", "summary": "one line, what it does",
+  "why": "one line, what in the day suggested it", "evidence": ["up to 5 short quotes or paraphrases from the transcript, with who and when"],
+  "brief": "one paragraph, at most 150 words, that a coding agent could build from: what it must do, inputs and outputs, the
+  devices or services involved, what was tried before and how it failed, anything learned (hosts, names, ids) - concrete"}]}
+
+The post, plain Discord markdown, short:
 **Tool ideas from the last day**
 1. **`snake_name`** - what it does in one line. _Why: ..._
 2. ...
 Reply **build 1** (or 2, 3) and I'll make it.
 
-If the day gives you nothing worth proposing, answer exactly NONE."""
+If the day gives you nothing worth proposing: {"post": "NONE", "ideas": []}"""
+
+
+def settings_load():
+    try:
+        return json.loads(SETTINGS_FILE.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+
+
+def settings_save(s):
+    SETTINGS_FILE.parent.mkdir(parents=True, exist_ok=True)
+    SETTINGS_FILE.write_text(json.dumps(s, indent=2), encoding="utf-8")
+
+
+def ideas_settings():
+    """Effective switches: settings.json over env defaults."""
+    s = settings_load()
+    return {"daily_ideas": bool(s.get("daily_ideas", bool(IDEAS_AT))),
+            "ideas_at": str(s.get("ideas_at") or IDEAS_AT or "09:00"),
+            "ideas_channel": str(s.get("ideas_channel") or IDEAS_CHANNEL).lstrip("#").lower()}
+
+
+def settings_tool(action="get", key=None, value=None, ctx=None):
+    """Meta-tool, owner-only: the bot's own switches. get / set <key> <value> / run_ideas."""
+    if action == "get":
+        return {**ideas_settings(), "note": "daily_ideas true/false; ideas_at HH:MM local; ideas_channel name or id (empty = busiest); run_ideas posts now"}
+    if action == "run_ideas":
+        if not (ctx or {}).get("ideas_now"):
+            raise ToolError("cannot run the review from here (no Discord connection in this context)")
+        ctx["ideas_now"]()
+        return "running the daily review now; the post lands in a minute or so (or nothing, if the day gave no ideas)"
+    if action != "set":
+        raise ToolError("action must be get, set or run_ideas")
+    s = settings_load()
+    v = str(value if value is not None else "").strip()
+    if key == "daily_ideas":
+        if v.lower() not in ("true", "false", "on", "off", "yes", "no"):
+            raise ToolError("daily_ideas takes true or false")
+        s["daily_ideas"] = v.lower() in ("true", "on", "yes")
+    elif key == "ideas_at":
+        if not re.fullmatch(r"([01]?\d|2[0-3]):[0-5]\d", v):
+            raise ToolError("ideas_at is HH:MM, 24h, local time")
+        s["ideas_at"] = v
+    elif key == "ideas_channel":
+        s["ideas_channel"] = v.lstrip("#").lower()
+    else:
+        raise ToolError("key must be daily_ideas, ideas_at or ideas_channel")
+    settings_save(s)
+    return {"ok": True, **ideas_settings()}
 
 
 async def gather_day(bot, since):
@@ -681,19 +752,89 @@ async def gather_day(bot, since):
     return per_channel
 
 
-def propose_ideas(transcript, notes=""):
-    """One model call, no tools: the day's transcript plus the current kit -> the ideas post, or None."""
+def previously_proposed(days=7):
+    """Names proposed in the last week, so the review does not repeat itself without new evidence."""
+    import datetime
+    cutoff = (datetime.date.today() - datetime.timedelta(days=days)).isoformat()
+    names = []
+    for f in sorted(IDEAS_DIR.glob("20*.json")):
+        if f.stem >= cutoff:
+            try:
+                names += [i.get("name") for i in json.loads(f.read_text(encoding="utf-8")).get("ideas", []) if i.get("name")]
+            except (OSError, ValueError):
+                pass
+    return sorted(set(names))
+
+
+def propose_ideas(transcript):
+    """One model call, no tools: the day's transcript plus the current kit -> {"post", "ideas"} or None."""
     kit = "\n".join(f"- {s['name']}: {s['description'].splitlines()[0][:120]}" for s in tool_specs()[len(META_TOOLS):])
-    prompt = (f"Tools you already have:\n{kit or '(none yet)'}\n\n{notes}Conversation of the last {IDEAS_LOOKBACK_H} hours "
-              f"(YOU are your own messages):\n\n{transcript[-IDEAS_MAX_CHARS:]}")
-    r = get_client().messages.create(model=MODEL, max_tokens=900, system=IDEAS_SYSTEM,
+    prev = previously_proposed()
+    prompt = (f"Tools you already have:\n{kit or '(none yet)'}\n\n"
+              + (f"Previously proposed this week (skip unless there is new evidence): {', '.join(prev)}\n\n" if prev else "")
+              + f"Conversation of the last {IDEAS_LOOKBACK_H} hours (YOU are your own messages):\n\n{transcript[-IDEAS_MAX_CHARS:]}")
+    r = get_client().messages.create(model=MODEL, max_tokens=6000, system=IDEAS_SYSTEM,
                                      messages=[{"role": "user", "content": prompt}], output_config={"effort": "medium"})
     text = "".join(b.text for b in r.content if b.type == "text").strip()
-    return None if not text or text.upper().startswith("NONE") else text
+    text = re.sub(r"^```(?:json)?\s*|\s*```$", "", text)
+    try:
+        data = json.loads(text)
+    except ValueError:
+        data = salvage_ideas_json(text)
+        print(f"ideas: model output was not clean JSON (stop={r.stop_reason}); salvaged post={bool(data.get('post'))} "
+              f"ideas={len(data.get('ideas', []))}", flush=True)
+    post = str(data.get("post") or "").strip()
+    if not post or post.upper().startswith("NONE"):
+        return None
+    ideas = [i for i in data.get("ideas", []) if isinstance(i, dict) and i.get("name")]
+    for k, i in enumerate(ideas, 1):
+        i.setdefault("n", k)
+    return {"post": post, "ideas": ideas}
+
+
+def salvage_ideas_json(text):
+    """The output was JSON until it was cut off (token cap) or decorated. Recover the post string and every complete idea object;
+    a partial trailing idea is dropped. Falls back to the raw text as the post so the day is never lost entirely."""
+    dec = json.JSONDecoder(strict=False)                     # lenient about raw newlines inside strings
+    out = {"post": "", "ideas": []}
+    m = re.search(r'"post"\s*:\s*(")', text)
+    if m:
+        try:
+            out["post"] = dec.raw_decode(text, m.start(1))[0]
+        except ValueError:
+            pass
+    m = re.search(r'"ideas"\s*:\s*\[', text)
+    if m:
+        i = m.end()
+        while True:
+            j = text.find("{", i)
+            if j < 0:
+                break
+            try:
+                obj, end = dec.raw_decode(text, j)
+            except ValueError:
+                break                                        # the cut-off one
+            if isinstance(obj, dict):
+                out["ideas"].append(obj)
+            i = end
+    if not out["post"]:
+        out["post"] = text if not text.lstrip().startswith("{") else ""
+    if out["ideas"] and out["post"]:                        # drop ideas the post no longer describes (it lists them by number)
+        out["ideas"] = [x for x in out["ideas"] if f"`{x.get('name')}`" in out["post"] or not x.get("name")]
+    return out
+
+
+def find_channel(bot, wanted):
+    for guild in bot.guilds:
+        for c in guild.text_channels:
+            if str(c.id) == wanted or c.name.lower() == wanted:
+                return c
+    return None
 
 
 async def post_ideas(bot, histories, dry=False):
-    """Gather, propose, post to the chosen channel; the post joins that channel's history so 'build 2' works as a normal reply."""
+    """Gather, propose, post to the chosen channel, save the working notes. The post joins that channel's history and
+    'build N' is answered from the saved notes (see build_request_extra) even after the post has scrolled out of memory."""
     import datetime
     since = datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(hours=IDEAS_LOOKBACK_H)
     day = await gather_day(bot, since)
@@ -701,46 +842,87 @@ async def post_ideas(bot, histories, dry=False):
         print("ideas: nothing said in the last day; skipping", flush=True)
         return None
     transcript = "\n\n".join(f"# {ch.name}\n" + "\n".join(lines) for ch, lines in day)
-    target = None
-    if IDEAS_CHANNEL:
-        for guild in bot.guilds:
-            target = next((c for c in guild.text_channels if str(c.id) == IDEAS_CHANNEL or c.name.lower() == IDEAS_CHANNEL), None) or target
-    if target is None:
-        target = day[0][0]                                     # the busiest channel of the day
-    ideas = await asyncio.to_thread(propose_ideas, transcript)
-    if not ideas:
+    wanted = ideas_settings()["ideas_channel"]
+    target = (find_channel(bot, wanted) if wanted else None) or day[0][0]     # else the busiest channel of the day
+    result = await asyncio.to_thread(propose_ideas, transcript)
+    if not result:
         print("ideas: the model found nothing worth proposing today", flush=True)
         return None
+    post = result["post"]
     if dry:
-        print(f"ideas (dry run, would post to #{target.name}):\n{ideas}", flush=True)
-        return ideas
-    for part in chunk(ideas):
+        print(f"ideas (dry run, would post to #{target.name}):\n{post}\n\nworking notes: {json.dumps(result['ideas'], indent=1)[:3000]}", flush=True)
+        return post
+    for part in chunk(post):
         await target.send(part)
-    histories[target.id].append({"role": "assistant", "content": ideas})
-    print(f"ideas: posted to #{target.name}", flush=True)
-    return ideas
+    histories[target.id].append({"role": "assistant", "content": post})
+    record = {"date": datetime.date.today().isoformat(), "posted_at": datetime.datetime.now().isoformat(timespec="minutes"),
+              "channel": target.name, "channel_id": target.id, "post": post, "ideas": result["ideas"]}
+    IDEAS_DIR.mkdir(parents=True, exist_ok=True)
+    (IDEAS_DIR / f"{record['date']}.json").write_text(json.dumps(record, indent=2), encoding="utf-8")
+    (IDEAS_DIR / "latest.json").write_text(json.dumps(record, indent=2), encoding="utf-8")
+    print(f"ideas: posted {len(result['ideas'])} idea(s) to #{target.name}", flush=True)
+    return post
+
+
+BUILD_RE = re.compile(r"^\s*(?:ok(?:ay)?[,.]?\s+|yes[,.]?\s+|please\s+|go\s+)?build\s+(?:idea\s+|#|number\s+|no\.?\s*)?(\d)\b", re.I)
+
+
+def build_request_extra(text):
+    """'build 2' -> the saved working notes for idea 2, as extra system context for this turn; '' for any other message."""
+    m = BUILD_RE.match(text or "")
+    if not m:
+        return ""
+    n = int(m.group(1))
+    try:
+        rec = json.loads((IDEAS_DIR / "latest.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return ("\n\nThe person said 'build N' but you have no saved daily ideas post to refer to. Ask what they would like built, "
+                "or if the context makes it obvious, just build that.")
+    idea = next((i for i in rec.get("ideas", []) if int(i.get("n", 0)) == n), None)
+    if not idea:
+        return (f"\n\nThe person said 'build {n}', but your latest ideas post ({rec.get('date')}) had {len(rec.get('ideas', []))} idea(s): "
+                + ", ".join(f"{i.get('n')} `{i.get('name')}`" for i in rec.get("ideas", [])) + ". Ask which one they mean.")
+    ev = "\n".join(f"  - {e}" for e in idea.get("evidence", [])[:8])
+    return (f"\n\nBUILD REQUEST: the person wants idea {n} from your daily ideas post of {rec.get('date')}: `{idea['name']}` - "
+            f"{idea.get('summary', '')}\nWhy it came up: {idea.get('why', '')}\nEvidence from that day:\n{ev or '  (none recorded)'}\n"
+            f"Suggested brief for the forge:\n{idea.get('brief', '')}\n"
+            f"Do it now: call request_tool with name `{idea['name']}` and that brief (add anything relevant from this conversation), "
+            f"reply with one short 'working on it' line, and end your turn. Do not ask for confirmation.")
 
 
 async def ideas_scheduler(bot, histories):
-    """Once a day at IDEAS_AT local time (the container's TZ). Sleeps until then; a failure is logged and the next day is tried."""
+    """Daily at the configured local time (container TZ). Checks the switches every minute, so turning the review off, moving
+    its time or changing its channel with the `settings` tool takes effect without a restart. Never runs twice in one day."""
     import datetime
-    try:
-        hh, mm = (int(x) for x in IDEAS_AT.split(":"))
-    except ValueError:
-        print(f"ideas: IDEAS_AT={IDEAS_AT!r} is not HH:MM; daily ideas off", flush=True)
-        return
+    announced, last_run = None, None
     while True:
-        now = datetime.datetime.now()
-        nxt = now.replace(hour=hh, minute=mm, second=0, microsecond=0)
-        if nxt <= now:
-            nxt += datetime.timedelta(days=1)
-        print(f"ideas: next review at {nxt:%Y-%m-%d %H:%M} ({IDEAS_CHANNEL or 'busiest channel'})", flush=True)
-        await asyncio.sleep((nxt - now).total_seconds())
+        s = ideas_settings()
+        if not s["daily_ideas"]:
+            if announced != "off":
+                print("ideas: daily review is off (settings)", flush=True)
+                announced = "off"
+            await asyncio.sleep(60)
+            continue
         try:
-            await post_ideas(bot, histories)
-        except Exception as e:  # noqa
-            print(f"ideas: failed: {type(e).__name__}: {str(e)[:200]}", flush=True)
-        await asyncio.sleep(61)                                # never twice in one minute
+            hh, mm = (int(x) for x in s["ideas_at"].split(":"))
+        except ValueError:
+            print(f"ideas: ideas_at={s['ideas_at']!r} is not HH:MM; skipping", flush=True)
+            await asyncio.sleep(300)
+            continue
+        now = datetime.datetime.now()
+        target = now.replace(hour=hh, minute=mm, second=0, microsecond=0)
+        if target <= now or last_run == now.date():
+            target += datetime.timedelta(days=1)
+        if announced != target:
+            print(f"ideas: next review at {target:%Y-%m-%d %H:%M} ({s['ideas_channel'] or 'busiest channel'})", flush=True)
+            announced = target
+        await asyncio.sleep(max(1, min(60, (target - datetime.datetime.now()).total_seconds())))
+        if datetime.datetime.now() >= target and last_run != datetime.date.today():
+            last_run = datetime.date.today()
+            try:
+                await post_ideas(bot, histories)
+            except Exception as e:  # noqa
+                print(f"ideas: failed: {type(e).__name__}: {str(e)[:200]}", flush=True)
 
 
 STARTER_TOOLS = Path(os.environ.get("STARTER_TOOLS", "/app/starter-tools"))   # baked into the image from bots/example-bot/starter-tools
@@ -803,6 +985,8 @@ def dispatch(block, trusted, ctx=None):
             result, note = secrets_tool(**args), f"secrets {args.get('action', 'list')}"
         elif name == "attach_file":
             result, note = attach_file(**args, ctx=ctx), f"attached {os.path.basename(str(args.get('path', '')))}"
+        elif name == "settings":
+            result, note = settings_tool(**args, ctx=ctx), f"settings {args.get('action', 'get')}"
         else:
             result, note = run_tool(name, args), f"`{name}`"
         content = result if isinstance(result, str) else json.dumps(result, default=str)
@@ -1044,7 +1228,10 @@ def run_discord(token):
             hist.append({"role": "user", "content": f"{speaker}: {text}"})
             trusted = not TOOL_CREATORS or str(body.get("speaker_id") or "") in TOOL_CREATORS
             extra = VOICE_EXTRA if body.get("mode") == "voice" else ""
-            ctx = {"who": speaker, "trusted": trusted, "question": text, "hist": hist, "loop": asyncio.get_running_loop(), "files": []}
+            loop = asyncio.get_running_loop()
+            ctx = {"who": speaker, "trusted": trusted, "question": text, "hist": hist, "loop": loop, "files": [],
+                   "ideas_now": lambda: asyncio.run_coroutine_threadsafe(post_ideas(bot, histories), loop)}
+            extra += build_request_extra(text)
             if str(body.get("channel_id") or "").isdigit():      # where a forge follow-up (and any attached file) can be posted
                 channel_id = int(body["channel_id"])
 
@@ -1086,8 +1273,7 @@ def run_discord(token):
         if not getattr(bot, "_brain_started", False):
             bot._brain_started = True
             asyncio.create_task(brain_endpoint())
-            if IDEAS_AT:
-                asyncio.create_task(ideas_scheduler(bot, histories))
+            asyncio.create_task(ideas_scheduler(bot, histories))     # checks its own on/off switch
 
     @bot.event
     async def on_message(msg):
@@ -1122,11 +1308,14 @@ def run_discord(token):
                     await msg.reply(part, mention_author=(i == 0), files=attach)
                 except Exception:  # noqa - original message deleted or reply refused: still deliver it
                     await msg.channel.send((f"{msg.author.mention} " if i == 0 else "") + part, files=discord_files(files) if i == 0 else [])
+        loop = asyncio.get_running_loop()
         ctx = {"who": msg.author.display_name, "trusted": trusted, "question": text_only, "hist": hist,
-               "loop": asyncio.get_running_loop(), "send": send_reply, "files": []}
+               "loop": loop, "send": send_reply, "files": [],
+               "ideas_now": lambda: asyncio.run_coroutine_threadsafe(post_ideas(bot, histories), loop)}
+        extra = build_request_extra(text)             # "build 2" -> the saved notes behind idea 2 ride along for this turn
         try:
             async with typing_indicator(msg.channel):
-                reply, notes = await asyncio.to_thread(ask, hist, trusted, "", ctx)
+                reply, notes = await asyncio.to_thread(ask, hist, trusted, extra, ctx)
         except anthropic.RateLimitError:
             reply = "I'm being rate limited — try again in a moment."
         except anthropic.APIStatusError as e:
