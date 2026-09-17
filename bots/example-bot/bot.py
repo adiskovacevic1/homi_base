@@ -148,6 +148,8 @@ something, and never ask whether they would like a tool built - a missing tool i
 the next step. Say "working on it" if it will take a moment, then get on with it. Tools stay available
 afterwards, including after a restart, so you build up a kit over time. When a reply used tools you built
 during this request, end it with one line naming them, e.g. "New tool: `lg_tv` (LG TV control)."
+You can send files: have a tool save its output under /data (an image, a chart, a CSV, a report, a log) and
+call attach_file with the path; it is uploaded with your reply. Never say you cannot upload or attach files.
 
 Writing one:
 - `code` must define a top-level `run(**kwargs)` taking your input_schema's properties and *returning* a
@@ -273,9 +275,36 @@ if FORGE_ON:
             "example_call": {"type": "object", "description": "the arguments you want to call it with right now; the agent tests with these"}},
             "required": ["name", "brief"]},
     })
+META_TOOLS.append({
+    "name": "attach_file",
+    "description": "Send a file to the person with your reply: an image a tool made, a report, a CSV, a log. The file must be "
+                   "under /data (tools write there). Call it once per file, up to ten; they go out attached to your next reply.",
+    "input_schema": {"type": "object", "properties": {
+        "path": {"type": "string", "description": "absolute path under /data"},
+        "note": {"type": "string", "description": "optional caption, shown with the file"}},
+        "required": ["path"]},
+})
 META_NAMES = {t["name"] for t in META_TOOLS}
 # Tools that act on the machine rather than the conversation; limited to TOOL_CREATORS.
 PRIVILEGED = {"create_tool", "request_tool", "delete_tool", "shell", "install", "secrets"}
+UPLOAD_MAX = int(os.environ.get("DISCORD_UPLOAD_MAX_MB", "10")) * 1024 * 1024   # Discord's limit for a server without boosts
+UPLOAD_MAX_FILES = 10
+
+
+def attach_file(path, note=None, ctx=None):
+    """Queue a file for the reply being written. The actual upload happens with the reply, on the event loop."""
+    if ctx is None or "files" not in ctx:
+        raise ToolError("there is nowhere to send a file from here (no Discord reply in progress)")
+    p = Path(str(path or "")).resolve()
+    if not str(p).startswith("/data/") or not p.is_file():
+        raise ToolError(f"{path} is not a file under /data; tools should save what they produce under /data/<tool>/ and pass that path")
+    size = p.stat().st_size
+    if size > UPLOAD_MAX:
+        raise ToolError(f"{p.name} is {size / 1048576:.1f} MB; Discord accepts up to {UPLOAD_MAX // 1048576} MB here - shrink or split it")
+    if len(ctx["files"]) >= UPLOAD_MAX_FILES:
+        raise ToolError(f"{UPLOAD_MAX_FILES} files are already attached to this reply")
+    ctx["files"].append((str(p), (note or "").strip()[:200]))
+    return f"attached {p.name} ({size / 1024:.0f} KB); it goes out with your reply - mention it in one line, do not paste its contents"
 
 _client = None
 
@@ -566,7 +595,7 @@ async def forge_followup(name, out, ctx):
     run the model with the same trust as the original request, and post its reply to the person who asked."""
     hist, who = ctx["hist"], ctx.get("who") or "the person"
     hist.append({"role": "user", "content": forge_result_text(name, out, who, ctx.get("question"))})
-    fctx = {**ctx, "no_forge": True}
+    fctx = {**ctx, "no_forge": True, "files": []}
     try:
         reply, notes = await asyncio.to_thread(ask, hist, ctx.get("trusted", False), "", fctx)
     except anthropic.APIError as e:
@@ -577,9 +606,21 @@ async def forge_followup(name, out, ctx):
     if notes:
         reply += "\n-# " + ", ".join(dict.fromkeys(notes))
     try:
-        await ctx["send"](reply)
+        await ctx["send"](reply, fctx["files"])
     except Exception as e:  # noqa - the send target may be gone; the history still has the answer
         print(f"forge follow-up for `{name}` could not be posted: {type(e).__name__}: {e}", flush=True)
+
+
+def discord_files(files):
+    """(path, note) pairs -> discord.File objects for one message. A file that vanished is skipped, not fatal."""
+    import discord
+    out = []
+    for path, note in files or []:
+        try:
+            out.append(discord.File(path, description=note or None))
+        except OSError as e:
+            print(f"attachment skipped: {path}: {e}", flush=True)
+    return out
 
 
 STARTER_TOOLS = Path(os.environ.get("STARTER_TOOLS", "/app/starter-tools"))   # baked into the image from bots/example-bot/starter-tools
@@ -640,6 +681,8 @@ def dispatch(block, trusted, ctx=None):
             result, note = install(**args), f"installed {', '.join(args.get('packages') or [])}"
         elif name == "secrets":
             result, note = secrets_tool(**args), f"secrets {args.get('action', 'list')}"
+        elif name == "attach_file":
+            result, note = attach_file(**args, ctx=ctx), f"attached {os.path.basename(str(args.get('path', '')))}"
         else:
             result, note = run_tool(name, args), f"`{name}`"
         content = result if isinstance(result, str) else json.dumps(result, default=str)
@@ -881,14 +924,14 @@ def run_discord(token):
             hist.append({"role": "user", "content": f"{speaker}: {text}"})
             trusted = not TOOL_CREATORS or str(body.get("speaker_id") or "") in TOOL_CREATORS
             extra = VOICE_EXTRA if body.get("mode") == "voice" else ""
-            ctx = {"who": speaker, "trusted": trusted, "question": text, "hist": hist, "loop": asyncio.get_running_loop()}
-            if str(body.get("channel_id") or "").isdigit():      # where a forge follow-up can be posted (the voice session's text channel)
+            ctx = {"who": speaker, "trusted": trusted, "question": text, "hist": hist, "loop": asyncio.get_running_loop(), "files": []}
+            if str(body.get("channel_id") or "").isdigit():      # where a forge follow-up (and any attached file) can be posted
                 channel_id = int(body["channel_id"])
 
-                async def send_to_channel(reply):
+                async def send_to_channel(reply, files=None):
                     ch = bot.get_channel(channel_id) or await bot.fetch_channel(channel_id)
-                    for part in chunk(reply):
-                        await ch.send(part)
+                    for i, part in enumerate(chunk(reply)):
+                        await ch.send(part, files=discord_files(files) if i == 0 else [])
                 ctx["send"] = send_to_channel
             try:
                 reply, notes = await asyncio.to_thread(ask, hist, trusted, extra, ctx)
@@ -900,6 +943,11 @@ def run_discord(token):
             except anthropic.APIConnectionError:
                 reply, notes = "I couldn't reach the model API.", []
             hist.append({"role": "assistant", "content": reply})
+            if ctx["files"] and ctx.get("send"):                 # a spoken answer cannot carry a file; post it to the text channel
+                try:
+                    await ctx["send"](f"{speaker}, here is the file:", ctx["files"])
+                except Exception as e:  # noqa
+                    print(f"could not post attachment for voice reply: {type(e).__name__}: {e}", flush=True)
             return web.json_response({"reply": reply, "notes": list(dict.fromkeys(notes))})
 
         app = web.Application()
@@ -944,15 +992,16 @@ def run_discord(token):
         notes = []
         trusted = not TOOL_CREATORS or str(msg.author.id) in TOOL_CREATORS
 
-        async def send_reply(reply):
+        async def send_reply(reply, files=None):
             """A forge follow-up, minutes later: reply to the original message and ping the person, who may have moved on."""
             for i, part in enumerate(chunk(reply)):
+                attach = discord_files(files) if i == 0 else []
                 try:
-                    await msg.reply(part, mention_author=(i == 0))
+                    await msg.reply(part, mention_author=(i == 0), files=attach)
                 except Exception:  # noqa - original message deleted or reply refused: still deliver it
-                    await msg.channel.send((f"{msg.author.mention} " if i == 0 else "") + part)
+                    await msg.channel.send((f"{msg.author.mention} " if i == 0 else "") + part, files=discord_files(files) if i == 0 else [])
         ctx = {"who": msg.author.display_name, "trusted": trusted, "question": text_only, "hist": hist,
-               "loop": asyncio.get_running_loop(), "send": send_reply}
+               "loop": asyncio.get_running_loop(), "send": send_reply, "files": []}
         try:
             async with typing_indicator(msg.channel):
                 reply, notes = await asyncio.to_thread(ask, hist, trusted, "", ctx)
@@ -969,8 +1018,16 @@ def run_discord(token):
         notes = attach_notes + notes
         if notes:
             reply += "\n-# " + ", ".join(dict.fromkeys(notes))   # Discord small text
-        for part in chunk(reply):
-            await msg.reply(part, mention_author=False)
+        for i, part in enumerate(chunk(reply)):
+            files = discord_files(ctx["files"]) if i == 0 else []
+            try:
+                await msg.reply(part, mention_author=False, files=files)
+            except discord.HTTPException as e:                   # usually the upload: too big for this server, or a bad file
+                if not files:
+                    raise
+                print(f"attachment upload failed on message {msg.id}: {e}", flush=True)
+                await msg.reply(part + f"\n-# (could not upload {', '.join(os.path.basename(p) for p, _ in ctx['files'])}: {str(e)[:120]})",
+                                mention_author=False)
 
     bot.run(token, log_handler=None)
 
