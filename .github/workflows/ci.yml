@@ -66,23 +66,34 @@ jobs:
           v = vault.Vault('/tmp/v.enc', passphrase='ci-passphrase'); v.set('A_KEY', 'x')
           assert v.get('A_KEY') == 'x'
           print('bot imports; tools offered:', sorted(bot.META_NAMES))"
-      - name: The stack starts with no configuration and idles cleanly
+      - name: The stack starts with a bare configuration and every service reaches its resting state
         run: |
+          # a throwaway env, never committed: enough for the forge and the console to start; no Discord token, so the bot idles
+          printf 'INTERNAL_TOKEN=ci-not-a-secret\nVAULT_PASSPHRASE=ci-passphrase\nTOOL_CREATORS=1\n' > bots/example-bot/.env
           docker compose up -d example-bot dev
           sleep 15
           docker compose ps
           docker compose logs example-bot dev
           docker compose logs example-bot | grep -q "idling" || { echo "example-bot did not reach its idle state"; exit 1; }
-          docker compose logs dev | grep -q "forge idle" || { echo "dev box did not reach its idle state"; exit 1; }
+          docker compose logs dev | grep -q "forge listening" || { echo "the forge did not start"; exit 1; }
           if docker compose logs | grep -q "Traceback"; then echo "a container logged a traceback"; exit 1; fi
-          echo "both containers up and idle, no tracebacks"
-      - name: The setup server serves its page and refuses without the key
+          docker compose exec -T dev curl -fs localhost:8791/health | grep -q '"ok": true' || { echo "forge health failed"; exit 1; }
+          echo "bot idle, forge up, no tracebacks"
+      - name: The always-on console is served by the dev box and asks for a login
         run: |
-          docker compose run --rm --no-deps -d -p 127.0.0.1:8792:8792 -e SETUP_KEY=cikey -e SETUP_SKIP_CHECKS=1 -e LAB_DIR=/tmp/lab dev sh -c "mkdir -p /tmp/lab/bots/example-bot/kits /tmp/lab/bots/voice-bot && python /opt/forge/setup_web.py"
           for i in $(seq 1 30); do curl -fs http://127.0.0.1:8792/health >/dev/null && break; sleep 1; done
-          test "$(curl -s -o /dev/null -w '%{http_code}' 'http://127.0.0.1:8792/setup?key=cikey')" = 200
-          test "$(curl -s -o /dev/null -w '%{http_code}' 'http://127.0.0.1:8792/api/state')" = 403
-          curl -s -H 'X-Setup-Key: cikey' http://127.0.0.1:8792/api/state | grep -q '"mode"'
-          echo "setup page up, key enforced"
+          curl -s http://127.0.0.1:8792/health | grep -q '"persistent": true' || { echo "console health did not report persistent mode"; curl -s http://127.0.0.1:8792/health; exit 1; }
+          test "$(curl -s -o /dev/null -w '%{http_code}' 'http://127.0.0.1:8792/console')" = 200
+          test "$(curl -s -o /dev/null -w '%{http_code}' 'http://127.0.0.1:8792/api/state')" = 401
+          echo "console up on 8792, login required"
+      - name: The one-off setup server serves its page and refuses without the key
+        run: |
+          # on 8799: the running dev box already holds 8792 for the console
+          docker compose run --rm --no-deps -d -p 127.0.0.1:8799:8792 -e SETUP_KEY=cikey -e SETUP_SKIP_CHECKS=1 -e LAB_DIR=/tmp/lab dev sh -c "mkdir -p /tmp/lab/bots/example-bot/kits /tmp/lab/bots/voice-bot && python /opt/forge/setup_web.py"
+          for i in $(seq 1 30); do curl -fs http://127.0.0.1:8799/health >/dev/null && break; sleep 1; done
+          test "$(curl -s -o /dev/null -w '%{http_code}' 'http://127.0.0.1:8799/setup?key=cikey')" = 200
+          test "$(curl -s -o /dev/null -w '%{http_code}' 'http://127.0.0.1:8799/api/state')" = 403
+          curl -s -H 'X-Setup-Key: cikey' http://127.0.0.1:8799/api/state | grep -q '"mode": "setup"'
+          echo "setup page up on 8799, key enforced"
       - if: always()
         run: docker compose down -v --remove-orphans
