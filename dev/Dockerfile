@@ -11,11 +11,11 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && apt-get clean && rm -rf /var/lib/apt/lists/*
 
 # Common bot libraries preinstalled so a new bot can start immediately.
-RUN pip install anthropic discord.py aiohttp python-dotenv httpx
+RUN pip install anthropic discord.py aiohttp python-dotenv httpx cryptography
 
 WORKDIR /bots
 ENTRYPOINT ["/usr/bin/tini", "--"]
 # The forge: builds tools for the bots with a headless Claude Code (see forge.py). No INTERNAL_TOKEN -> it idles.
-COPY forge.py setup.py setup_web.py setup.html /opt/forge/
-COPY assets/ /opt/forge/assets/
+COPY dev/forge.py dev/setup.py dev/setup_web.py dev/setup.html bots/example-bot/vault.py /opt/forge/
+COPY dev/assets/ /opt/forge/assets/
 CMD ["python", "/opt/forge/forge.py"]

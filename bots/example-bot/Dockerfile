@@ -7,7 +7,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 WORKDIR /app
 COPY requirements.txt .
 RUN pip install -r requirements.txt
-COPY bot.py .
+COPY bot.py vault.py .
 # A fresh install starts with these generic tools (copied into /data/tools on first start when it is empty) and grows from there.
 COPY starter-tools/ /app/starter-tools/
 # Runs as root: the bot's `install` tool needs apt, and it is alone in this container.

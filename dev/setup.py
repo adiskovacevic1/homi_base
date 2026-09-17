@@ -8,14 +8,18 @@ browser (`install.sh --terminal`) and holds the file-writing code both share.
 Writes bots/example-bot/.env, bots/voice-bot/.env and ./.env (all git-ignored), creates the household's kit folder,
 and prints the Discord invite link. Nothing is sent anywhere; the values only land in those files on this PC.
 """
-import base64, getpass, os, re, secrets, sys
+import getpass, os, re, secrets, sys, time
 from pathlib import Path
+
+import vault as vaultlib                              # bots/example-bot/vault.py, copied next to this file in the image
 
 LAB = Path(os.environ.get("LAB_DIR", "/lab"))         # the repo, mounted into the dev container
 BOT_ENV = LAB / "bots" / "example-bot" / ".env"
 VOICE_ENV = LAB / "bots" / "voice-bot" / ".env"
 ROOT_ENV = LAB / ".env"                               # compose interpolation: KIT=<household> picks the kit folder to mount
 KITS = LAB / "bots" / "example-bot" / "kits"
+VAULT_PATH = LAB / "bots" / "example-bot" / "data" / "secrets_manager" / "vault.enc"   # the bot's /data, on the host
+RESTART_MARKER = LAB / ".restart-needed"              # the console leaves this when a change needs `docker compose up -d`; the wrapper acts on it
 # View Channels, Send Messages, Read Message History, Attach Files, Embed Links, Add Reactions, Connect, Speak, Use Voice Activity
 INVITE_PERMS = 1024 | 2048 | 65536 | 32768 | 16384 | 64 | 1048576 | 2097152 | 33554432
 KIT_RE = re.compile(r"^[a-z][a-z0-9-]{1,40}$")
@@ -60,6 +64,37 @@ def write_env(path, lines):
         pass
 
 
+def open_vault(passphrase=None, legacy_key=None):
+    return vaultlib.Vault(VAULT_PATH, passphrase=passphrase or None, legacy_key=legacy_key or None)
+
+
+def current_vault():
+    """The vault as the running bot sees it: opened with what the env file holds. None when there is no config yet."""
+    env = env_values(BOT_ENV)
+    if not env:
+        return None
+    return open_vault(env.get("VAULT_PASSPHRASE"), env.get("VAULT_KEY"))
+
+
+def update_env(path, changes):
+    """Set or add KEY=value lines in an existing env file, keeping comments and order. Returns the keys that changed."""
+    lines = path.read_text(encoding="utf-8").splitlines() if path.exists() else []
+    changed, seen = [], set()
+    for i, line in enumerate(lines):
+        m = re.match(r"^([A-Z][A-Z0-9_]*)=(.*)$", line)
+        if m and m.group(1) in changes:
+            seen.add(m.group(1))
+            if m.group(2) != str(changes[m.group(1)]):
+                lines[i] = f"{m.group(1)}={changes[m.group(1)]}"
+                changed.append(m.group(1))
+    for k, v in changes.items():
+        if k not in seen:
+            lines.append(f"{k}={v}")
+            changed.append(k)
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8", newline="\n")
+    return changed
+
+
 def validate(cfg):
     """Shared by both front ends. Returns a list of problems; empty means write_files() will accept it."""
     problems = []
@@ -67,6 +102,8 @@ def validate(cfg):
         problems.append("the Discord token does not look like one (about 70 characters with two dots)")
     if not cfg.get("anthropic", "").startswith("sk-ant-"):
         problems.append("the Anthropic key should start with sk-ant-")
+    if cfg.get("passphrase") and len(cfg["passphrase"]) < 8:
+        problems.append("the vault passphrase should be at least 8 characters")
     owners = [p.strip() for p in cfg.get("owners", "").split(",") if p.strip()]
     if not owners or not all(p.isdigit() for p in owners):
         problems.append("at least one owner Discord user ID is required (numbers only)")
@@ -93,10 +130,10 @@ def env_values(path):
 def backup_existing():
     """Before overwriting: copy each existing env file to <name>.bak-<timestamp> beside it (git-ignored like the original).
     A reconfigure that goes wrong is then a copy away from undone. Returns the backup paths."""
-    import shutil, time
+    import shutil
     stamp = time.strftime("%Y%m%d-%H%M%S")
     made = []
-    for p in (BOT_ENV, VOICE_ENV, ROOT_ENV):
+    for p in (BOT_ENV, VOICE_ENV, ROOT_ENV, VAULT_PATH):
         if p.exists():
             b = p.with_name(f"{p.name}.bak-{stamp}")
             shutil.copy2(p, b)
@@ -106,28 +143,60 @@ def backup_existing():
 
 def write_files(cfg):
     """cfg keys: token, anthropic, owners (comma-separated), name, eleven, voice, auto, kit, app_id (optional), kit_remote,
-    tz, fresh_secrets (optional, default False: an existing VAULT_KEY and INTERNAL_TOKEN are kept, so the vault the
-    bot's tools already use survives a reconfigure).
-    Backs up existing env files, writes the three new ones, creates the kit folder (empty -> the bot seeds the starter
-    tools), returns a summary."""
+    tz, passphrase (optional: kept from the existing config on a reconfigure, else the one given, else a suggested one),
+    fresh_secrets (optional, default False: the existing passphrase and INTERNAL_TOKEN are kept, so the vault the bot
+    already uses survives a reconfigure). On a reconfigure, a blank token/key means "keep the one in the vault".
+    Backs up existing env files and the vault, writes the bot's keys into the vault and the settings into the three
+    env files, creates the kit folder (empty -> the bot seeds the starter tools), returns a summary."""
+    old = env_values(BOT_ENV)
+    keep = bool(old) and not cfg.get("fresh_secrets")
+    notes = []
+    # the passphrase: kept on a reconfigure, otherwise chosen or suggested; a legacy VAULT_KEY install upgrades to it
+    if keep and old.get("VAULT_PASSPHRASE"):
+        passphrase, passphrase_is_new = old["VAULT_PASSPHRASE"], False
+    else:
+        passphrase, passphrase_is_new = (cfg.get("passphrase") or vaultlib.suggest_passphrase()), True
+    v = open_vault(passphrase, legacy_key=old.get("VAULT_KEY") if keep else None)
+    existing = {}
+    if v.exists():
+        try:
+            existing = {n: d.get("value", "") for n, d in v.load().items()}
+            if v.version() == 1:
+                v.rekey(passphrase)
+                notes.append("the vault was re-encrypted under the passphrase (it used a random key before)")
+        except vaultlib.VaultError as e:
+            aside = VAULT_PATH.with_name(f"vault.enc.unreadable-{time.strftime('%Y%m%d-%H%M%S')}")
+            VAULT_PATH.rename(aside)
+            notes.append(f"the existing vault could not be opened ({e}); it was moved aside as {aside.name} and a new one starts")
+    # blank on a reconfigure = keep what is already configured: the vault first, then the env file (which is where an
+    # install made before the vault held these, and where the voice bot's ElevenLabs settings used to live)
+    old_voice = env_values(VOICE_ENV)
+    for env_name, key in (("DISCORD_TOKEN", "token"), ("ANTHROPIC_API_KEY", "anthropic"), ("ELEVENLABS_API_KEY", "eleven"), ("ELEVEN_VOICE_ID", "voice")):
+        if not cfg.get(key):
+            cfg[key] = existing.get(env_name) or (old.get(env_name, "") if keep else "") or (old_voice.get(env_name, "") if keep else "")
     problems = validate(cfg)
     if problems:
         raise ValueError("; ".join(problems))
     name = cfg.get("name") or "the house bot"
     owners = ",".join(p.strip() for p in cfg["owners"].split(",") if p.strip())
     kit, eleven, voice, auto = cfg["kit"], cfg.get("eleven", ""), cfg.get("voice", ""), cfg.get("auto", "")
-    old = env_values(BOT_ENV)
     backups = backup_existing()
-    keep = bool(old) and not cfg.get("fresh_secrets")
     internal = old.get("INTERNAL_TOKEN") if keep and old.get("INTERNAL_TOKEN") else secrets.token_urlsafe(32)
-    vault = old.get("VAULT_KEY") if keep and old.get("VAULT_KEY") else base64.urlsafe_b64encode(os.urandom(32)).decode()   # a Fernet key
-    kept = [n for n in ("VAULT_KEY", "INTERNAL_TOKEN") if keep and old.get(n)]
+    kept = [n for n in ("INTERNAL_TOKEN",) if keep and old.get(n)] + (["VAULT_PASSPHRASE"] if not passphrase_is_new else [])
     wake = "hey bot," + ",".join(w for w in dict.fromkeys([name.lower(), name.lower().replace(" ", "")]) if w and w != "hey bot")
 
+    v.set("DISCORD_TOKEN", cfg["token"], "the bot's Discord token - a change needs `docker compose up -d`")
+    v.set("ANTHROPIC_API_KEY", cfg["anthropic"], "the model key; the bot and the forge use it, a change applies live")
+    if eleven:
+        v.set("ELEVENLABS_API_KEY", eleven, "ElevenLabs, for the voice bot's hearing and speaking")
+    if voice:
+        v.set("ELEVEN_VOICE_ID", voice, "the ElevenLabs voice the voice bot speaks with")
+
     write_env(BOT_ENV, [
-        "# written by bot-lab setup - git-ignored. Edit and `docker compose up -d example-bot` to apply.",
-        f"DISCORD_TOKEN={cfg['token']}",
-        f"ANTHROPIC_API_KEY={cfg['anthropic']}",
+        "# written by bot-lab setup - git-ignored. Keys live in the vault (console.ps1 edits them); settings live here.",
+        "# Edit and `docker compose up -d example-bot` to apply a settings change.",
+        "# opens data/secrets_manager/vault.enc: Discord token, model key, ElevenLabs, and every secret the tools declare",
+        f"VAULT_PASSPHRASE={passphrase}",
         "BOT_MODEL=claude-opus-5",
         f"BOT_SYSTEM=You are {name}, a concise, friendly assistant living in a Discord server. Answer briefly.",
         "TOOL_TIMEOUT=30",
@@ -135,10 +204,8 @@ def write_files(cfg):
         f"TOOL_CREATORS={owners}",
         "# channels it answers in without being @mentioned, by name or ID; empty = mention it everywhere",
         "OPEN_CHANNELS=",
-        "# shared secret for the internal /ask endpoint (voice bot) and the forge (dev box); compose network only",
+        "# shared secret for the internal /ask and /secrets endpoints (voice bot, forge, lan-helper); compose network only",
         f"INTERNAL_TOKEN={internal}",
-        "# key for the encrypted secret vault the bot's tools draw from",
-        f"VAULT_KEY={vault}",
         "# the forge on the dev box builds tools the model can't write in one go; FORGE_URL= turns it off",
         "FORGE_URL=http://bot-dev:8791",
         "FORGE_TIMEOUT=480",
@@ -149,16 +216,12 @@ def write_files(cfg):
         "IDEAS_CHANNEL=",
     ])
     write_env(VOICE_ENV, [
-        "# written by bot-lab setup - git-ignored. Edit and `docker compose up -d voice-bot` to apply.",
-        f"DISCORD_TOKEN={cfg['token']}",
-        f"ANTHROPIC_API_KEY={cfg['anthropic']}",
+        "# written by bot-lab setup - git-ignored. The Discord token and keys come from the text bot's vault at runtime.",
+        "# Edit and `docker compose up -d voice-bot` to apply a settings change.",
         "BOT_MODEL=claude-opus-5",
         f"WAKE_WORDS={wake}",
         f"AUTO_JOIN={auto}",
-        "# ElevenLabs for hearing and speaking; empty key = fully local (faster-whisper + Piper)",
-        f"ELEVENLABS_API_KEY={eleven}",
-        f"ELEVEN_VOICE_ID={voice}",
-        "# answer through the text bot's brain: same tools, same memory",
+        "# answer through the text bot's brain (same tools, same memory) and fetch secrets from it",
         "BRAIN_URL=http://example-bot:8790/ask",
         f"INTERNAL_TOKEN={internal}",
     ])
@@ -169,7 +232,9 @@ def write_files(cfg):
     return {"files": [str(p.relative_to(LAB)) for p in (BOT_ENV, VOICE_ENV, ROOT_ENV)], "kit": kit,
             "kit_tools": len(list((KITS / kit).glob("*.json"))), "kit_repo": kit_repo, "owners": owners, "name": name,
             "speech": "ElevenLabs" if eleven else "local (whisper + Piper)", "auto_join": auto or "off",
-            "invite": invite_url(cfg.get("app_id", "")), "backups": backups, "kept_secrets": kept}
+            "invite": invite_url(cfg.get("app_id", "")), "backups": backups, "kept_secrets": kept,
+            "vault": str(VAULT_PATH.relative_to(LAB)), "vault_count": len(v.names()),
+            "passphrase": passphrase if passphrase_is_new else None, "notes": notes}
 
 
 def init_kit_repo(kit_dir, remote=""):
@@ -217,9 +282,9 @@ def main():
         sys.exit("run this through install.sh or install.ps1 - the repo has to be mounted at /lab")
     print("\nbot-lab setup\n" + "-" * 60)
     if config_exists():
-        print("There is already a configuration on this PC. Replacing it means re-entering the token and keys.\n"
-              "The old files are backed up beside the new ones (.env.bak-<time>), and the vault key and internal token are kept\n"
-              "so the bot's stored secrets keep working.")
+        print("There is already a configuration on this PC. Replacing it re-asks the settings; a blank token or key keeps the one\n"
+              "in the vault. The old files and the vault are backed up beside the new ones (*.bak-<time>), and the vault passphrase\n"
+              "and internal token are kept so the bot's stored secrets keep working. For a single key change use console.ps1 instead.")
         if ask("Type REPLACE to go on, anything else to keep what is there", "keep") != "REPLACE":
             print("Kept the existing .env files.")
             return 0
@@ -236,9 +301,11 @@ Paste with a RIGHT-CLICK in this window (Ctrl+V does not paste here). Secret val
 """)
     cfg = {}
     cfg["app_id"] = ask("Discord Application ID", check=str.isdigit, hint="a long number")
-    cfg["token"] = ask("Discord bot token", secret=True, required=True, check=looks_like_discord_token,
-                       hint="a Discord token is ~70 characters with two dots; Bot tab -> Reset Token to get a fresh one")
-    cfg["anthropic"] = ask("Anthropic API key", secret=True, required=True, check=lambda v: v.startswith("sk-ant-"), hint="starts with sk-ant-")
+    reconfig = config_exists()
+    cfg["token"] = ask("Discord bot token" + (" (Enter to keep the current one)" if reconfig else ""), secret=True, required=not reconfig,
+                       check=looks_like_discord_token, hint="a Discord token is ~70 characters with two dots; Bot tab -> Reset Token to get a fresh one")
+    cfg["anthropic"] = ask("Anthropic API key" + (" (Enter to keep the current one)" if reconfig else ""), secret=True, required=not reconfig,
+                           check=lambda v: v.startswith("sk-ant-"), hint="starts with sk-ant-")
     cfg["owners"] = ask("Your Discord user ID(s), comma-separated - the only people allowed to give the bot new tools and a shell",
                         required=True, check=lambda v: all(p.strip().isdigit() for p in v.split(",")), hint="numbers only")
     cfg["name"] = ask("What should the bot call itself", "the house bot")
@@ -260,10 +327,19 @@ Paste with a RIGHT-CLICK in this window (Ctrl+V does not paste here). Secret val
     cfg["kit_remote"] = ask("Git URL to back the kit up to (optional, e.g. a private GitHub repo; Enter to skip)")
     cfg["tz"] = ask("Your timezone, for the daily post and logs (e.g. America/Chicago, Europe/London)", "UTC",
                     check=lambda v: re.fullmatch(r"[A-Za-z_]+(/[A-Za-z0-9_+-]+)*", v) is not None, hint="an IANA name like America/New_York")
+    if not (env_values(BOT_ENV).get("VAULT_PASSPHRASE")):
+        print("\nAll keys go into one encrypted vault file. Its passphrase is the one thing to keep safe: file + passphrase = full backup.")
+        cfg["passphrase"] = ask("Vault passphrase (Enter for a suggested one)", vaultlib.suggest_passphrase(),
+                                check=lambda v: len(v) >= 8, hint="at least 8 characters")
 
     out = write_files(cfg)
     print("\nWrote", ", ".join(out["files"]), "; tool kit:", f"bots/example-bot/kits/{out['kit']}",
           f"({out['kit_tools']} tools)" if out["kit_tools"] else "(empty - the starter tools are seeded on first start)", "-", out["kit_repo"])
+    print(f"Vault: {out['vault']} ({out['vault_count']} secrets)")
+    if out["passphrase"]:
+        print(f"\n  VAULT PASSPHRASE:  {out['passphrase']}\n  Write it down. It is also in bots/example-bot/.env; with it and the vault file everything can be restored.")
+    for n in out["notes"]:
+        print("Note:", n)
     if out["backups"]:
         print("Previous configuration backed up to:", ", ".join(out["backups"]), "| kept:", ", ".join(out["kept_secrets"]) or "nothing")
     if out["invite"]:

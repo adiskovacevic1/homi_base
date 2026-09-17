@@ -40,23 +40,50 @@ const SYSTEM = process.env.VOICE_SYSTEM || (
 mkdirSync(TMP, { recursive: true });
 const log = (...a) => console.log(new Date().toISOString().slice(11, 19), ...a);
 
+// ---------------------------------------------------------------- secrets: from the text bot's vault, via its internal /secrets route
+// The Discord token, the model key and the ElevenLabs key live in one vault the owner edits from the console. This bot asks
+// the brain for them at start (retrying until it is up), again every ten minutes, and whenever ElevenLabs rejects the key,
+// so a key changed in the console applies here without a restart. Plain env vars still work as the fallback.
+const BRAIN_URL = process.env.BRAIN_URL || "";
+const BRAIN_BASE = BRAIN_URL.replace(/\/ask\/?$/, "");
+const INTERNAL_TOKEN = process.env.INTERNAL_TOKEN || "";
+const SECRET_NAMES = ["DISCORD_TOKEN", "ANTHROPIC_API_KEY", "ELEVENLABS_API_KEY", "ELEVEN_VOICE_ID"];
+const secretsNow = Object.fromEntries(SECRET_NAMES.map(n => [n, process.env[n] || ""]));
+async function fetchSecrets() {
+  if (!BRAIN_BASE || !INTERNAL_TOKEN) return [];
+  const r = await fetch(`${BRAIN_BASE}/secrets?names=${SECRET_NAMES.join(",")}`, { headers: { "x-internal-token": INTERNAL_TOKEN }, signal: AbortSignal.timeout(5000) });
+  if (!r.ok) throw new Error(`brain HTTP ${r.status}`);
+  const { secrets } = await r.json(); const changed = [];
+  for (const n of SECRET_NAMES) if (secrets[n] && secrets[n] !== secretsNow[n]) { secretsNow[n] = secrets[n]; changed.push(n); }
+  if (changed.length) applySecrets(changed);
+  return changed;
+}
+
 // ---------------------------------------------------------------- ElevenLabs (optional): with a key, speech goes through their API
-const ELEVEN_KEY = process.env.ELEVENLABS_API_KEY || "";
-const ELEVEN_TTS = !!ELEVEN_KEY && process.env.ELEVEN_TTS !== "0";
-const ELEVEN_STT = !!ELEVEN_KEY && process.env.ELEVEN_STT !== "0";
-const ELEVEN_VOICE = process.env.ELEVEN_VOICE_ID || "21m00Tcm4TlvDq8ikWAM";   // "Rachel", a premade voice; --voices lists the account's
+let ELEVEN_KEY = "", ELEVEN_TTS = false, ELEVEN_STT = false, ELEVEN_VOICE = "21m00Tcm4TlvDq8ikWAM";   // "Rachel", a premade voice; --voices lists the account's
 const ELEVEN_TTS_MODEL = process.env.ELEVEN_TTS_MODEL || "eleven_flash_v2_5";  // ~75ms model latency; eleven_multilingual_v2 for quality
 const ELEVEN_TTS_FORMAT = process.env.ELEVEN_TTS_FORMAT || "mp3_44100_128";   // available on every tier; opus_48000_* also plays directly
 const ELEVEN_STT_MODEL = process.env.ELEVEN_STT_MODEL || "scribe_v1";
 const ELEVEN_STT_LANG = process.env.ELEVEN_STT_LANG ?? "en";                   // "" = let Scribe detect the language
 const ELEVEN_TIMEOUT_MS = Number(process.env.ELEVEN_TIMEOUT_MS || 20000);
 const ELEVEN_EXT = ELEVEN_TTS_FORMAT.startsWith("mp3") ? "mp3" : ELEVEN_TTS_FORMAT.startsWith("opus") ? "ogg" : ELEVEN_TTS_FORMAT.startsWith("wav") ? "wav" : null;
-if (ELEVEN_TTS && !ELEVEN_EXT) { console.error(`ELEVEN_TTS_FORMAT=${ELEVEN_TTS_FORMAT} is not playable here; use an mp3_*, opus_* or wav_* format`); process.exit(2); }
+if (!ELEVEN_EXT) { console.error(`ELEVEN_TTS_FORMAT=${ELEVEN_TTS_FORMAT} is not playable here; use an mp3_*, opus_* or wav_* format`); process.exit(2); }
+let anthropic = new Anthropic({ apiKey: secretsNow.ANTHROPIC_API_KEY || "not-set-yet" });
+function applySecrets(changed) {
+  ELEVEN_KEY = secretsNow.ELEVENLABS_API_KEY;
+  ELEVEN_TTS = !!ELEVEN_KEY && process.env.ELEVEN_TTS !== "0";
+  ELEVEN_STT = !!ELEVEN_KEY && process.env.ELEVEN_STT !== "0";
+  ELEVEN_VOICE = secretsNow.ELEVEN_VOICE_ID || "21m00Tcm4TlvDq8ikWAM";
+  if (changed.includes("ANTHROPIC_API_KEY")) anthropic = new Anthropic({ apiKey: secretsNow.ANTHROPIC_API_KEY || "not-set-yet" });
+  if (changed.length) log(`secrets ${changed.join(", ")} applied | ${engines()}`);
+}
+applySecrets([]);                                                              // from env, before anything asks the brain
 
 async function elevenFetch(url, init = {}) {
   const ctl = new AbortController(); const t = setTimeout(() => ctl.abort(), ELEVEN_TIMEOUT_MS);
   try {
     const r = await fetch(url, { ...init, signal: ctl.signal, headers: { "xi-api-key": ELEVEN_KEY, ...(init.headers || {}) } });
+    if (r.status === 401) fetchSecrets().catch(() => {});                       // the key may have been changed in the console
     if (!r.ok) throw new Error(`ElevenLabs HTTP ${r.status}: ${(await r.text()).replace(/\s+/g, " ").slice(0, 200)}`);
     return r;
   } finally { clearTimeout(t); }
@@ -112,7 +139,7 @@ class STT {
     return new Promise((resolve, reject) => { this.pending.set(wavPath, { resolve, reject }); this.proc.stdin.write(wavPath + "\n"); });
   }
 }
-const stt = new STT(ELEVEN_STT);
+const stt = new STT(true);                                                     // started by boot() when the ears are local, else on first fallback
 
 // ElevenLabs first when configured; the local engine covers a failed call, so a bad key or an outage costs latency, not the answer.
 async function hear(wavPath) {
@@ -143,10 +170,7 @@ async function speak(text, outBase) {
 const engines = () => `stt=${ELEVEN_STT ? "elevenlabs/" + ELEVEN_STT_MODEL : "whisper/" + (process.env.WHISPER_MODEL || "base.en")} tts=${ELEVEN_TTS ? "elevenlabs/" + ELEVEN_TTS_MODEL + " voice " + ELEVEN_VOICE : "piper/" + path.basename(PIPER_MODEL, ".onnx")}`;
 
 // ---------------------------------------------------------------- brain
-// Preferred: DockerBot's internal /ask endpoint (same tools, same memory as the text bot). Fallback: Claude directly.
-const BRAIN_URL = process.env.BRAIN_URL || "";
-const INTERNAL_TOKEN = process.env.INTERNAL_TOKEN || "";
-const anthropic = new Anthropic();
+// Preferred: the text bot's internal /ask endpoint (same tools, same memory). Fallback: Claude directly.
 function speakable(text) {
   // strip markdown the text bot may still emit, so the TTS does not read asterisks and brackets aloud
   return text.replace(/\*\*?|__|~~|`+/g, "").replace(/\[([^\]]+)\]\([^)]*\)/g, "$1").replace(/^\s*[-*•]\s+/gm, "")
@@ -397,7 +421,21 @@ async function runDiscord() {
       else if (cmd === "!voice") { const s = sessions.get(msg.guild.id); await msg.reply((s ? `In **${s.channelName}** with ${humans(msg.guild.channels.cache.get(s.channelId))} people; ${s.history.length / 2 | 0} exchanges so far. Wake words: ${WAKE.join(", ") || "none"}.` : "Not in a voice channel. `!join` while you're in one.") + `\n-# ${engines()} | auto-join: ${AUTO_JOIN.join(", ") || "off"}`); }
     } catch (e) { log("command failed:", e); msg.reply(`Something went wrong: ${e.message}`).catch(() => {}); }
   });
-  await client.login(process.env.DISCORD_TOKEN);
+  await client.login(secretsNow.DISCORD_TOKEN);
+}
+
+// ---------------------------------------------------------------- start: secrets first, then whatever was asked
+const sleep = (ms) => new Promise(r => setTimeout(r, ms));
+async function boot() {
+  if (BRAIN_BASE && INTERNAL_TOKEN) {
+    for (let i = 0; ; i++) {
+      try { await fetchSecrets(); break; }
+      catch (e) { if (secretsNow.DISCORD_TOKEN || i >= 24) { log("brain not answering for secrets; using what the environment has:", e.message); break; }
+                  if (i % 6 === 0) log("waiting for the text bot to hand over secrets:", e.message); await sleep(5000); }
+    }
+    setInterval(() => fetchSecrets().catch(() => {}), 600_000);
+  }
+  if (!ELEVEN_STT && !stt.started) stt.start();                                // local ears: warm whisper up now rather than on the first word
 }
 
 // ---------------------------------------------------------------- selftest: tts -> stt -> claude -> tts, no Discord
@@ -429,7 +467,9 @@ async function selftest() {
   stt.proc?.kill(); process.exit(0);
 }
 
-if (process.argv.includes("--voices")) listVoices().then(() => { stt.proc?.kill(); process.exit(0); }).catch(e => { console.error(e.message); stt.proc?.kill(); process.exit(1); });
-else if (process.argv.includes("--selftest")) selftest().catch(e => { console.error("selftest failed:", e); process.exit(1); });
-else if (!process.env.DISCORD_TOKEN) { log("DISCORD_TOKEN not set — idling"); setInterval(() => {}, 1 << 30); }
-else runDiscord().catch(e => { log("fatal:", e); process.exit(1); });
+if (process.argv.includes("--voices")) boot().then(listVoices).then(() => { stt.proc?.kill(); process.exit(0); }).catch(e => { console.error(e.message); stt.proc?.kill(); process.exit(1); });
+else if (process.argv.includes("--selftest")) boot().then(selftest).catch(e => { console.error("selftest failed:", e); process.exit(1); });
+else boot().then(() => {
+  if (!secretsNow.DISCORD_TOKEN) { log("no DISCORD_TOKEN from the vault or the environment — idling; add it in the console and restart"); setInterval(() => {}, 1 << 30); return; }
+  return runDiscord();
+}).catch(e => { log("fatal:", e); process.exit(1); });

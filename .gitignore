@@ -8,3 +8,4 @@ bots/*/data/
 bots/*/kits/
 __pycache__/
 *.pyc
+.restart-needed

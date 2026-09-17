@@ -11,16 +11,18 @@ Tools live in /data/tools (a Docker volume, so they survive restarts and are rea
 Generated code is never imported by the bot process; each call runs in a separate, time-limited python.
 
 Env (from .env):
-  DISCORD_TOKEN       Discord bot token. Missing -> the container idles and logs why, so `compose up` is clean.
-  ANTHROPIC_API_KEY   Anthropic key.
+  DISCORD_TOKEN       Discord bot token (normally in the vault). Missing -> the container idles and logs why, so `compose up` is clean.
+  ANTHROPIC_API_KEY   Anthropic key (normally in the vault; a change there applies to the next message, no restart).
   BOT_MODEL           default claude-opus-5
   BOT_SYSTEM          system prompt (optional)
   TOOL_TIMEOUT        seconds one tool call may run, default 30
   TOOL_CREATORS       comma-separated Discord user IDs allowed to write tools, run shell and install
                       software. Empty = everyone who can talk to it, which is rarely what you want.
   OPEN_CHANNELS       channels it answers in without being @mentioned, by name or ID (e.g. bot-chat)
-  VAULT_KEY           Fernet key for the secret vault at /data/secrets_manager/vault.enc. Lives only here, so tools
-                      (which can read all of /data) cannot decrypt the vault. Generate: python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
+  VAULT_PASSPHRASE    opens the secret vault at /data/secrets_manager/vault.enc (see vault.py), which holds DISCORD_TOKEN,
+                      ANTHROPIC_API_KEY, ELEVENLABS_API_KEY and every secret the tools declare. Lives only here, so tools
+                      (which can read all of /data) cannot open the vault. Older installs: VAULT_KEY (random Fernet key) still works.
+                      Any name below can also be set as a plain env var; the vault wins when both exist.
   INTERNAL_TOKEN      shared secret for the internal /ask endpoint other containers (voice-bot) call; unset = endpoint off
   BRAIN_PORT          port for that endpoint on the compose network, default 8790 (never published to the host)
   FORGE_URL           the dev box's tool builder (dev/forge.py), default http://bot-dev:8791; empty = no request_tool.
@@ -70,28 +72,26 @@ FORGE_ON = bool(FORGE_URL and os.environ.get("INTERNAL_TOKEN"))
 BOT_NAME = os.environ.get("BOT_NAME", "example-bot")
 KIT = os.environ.get("KIT", "default")       # which bots/<bot>/kits/<KIT> folder compose mounted at /data/tools; the forge installs there
 
-# ---------------------------------------------------------------- secrets: the bot process owns the vault, tools only ever see env vars
-VAULT_FILE = Path("/data/secrets_manager/vault.enc")   # {name: {"value", "note", "created", "updated"}}, Fernet-encrypted
+# ---------------------------------------------------------------- secrets: one encrypted vault (vault.py), opened with VAULT_PASSPHRASE.
+# It holds the bot's own keys (Discord, Anthropic, ElevenLabs) and everything its tools declare; tools only ever see env vars.
+from vault import Vault, VaultError, BOOTSTRAP as VAULT_BOOTSTRAP
+
 SECRET_NAME_RE = re.compile(r"^[A-Z][A-Z0-9_]{1,63}$")   # env-var style names
-
-
-def _fernet():
-    key = os.environ.get("VAULT_KEY")
-    if not key:
-        raise ToolError("no VAULT_KEY in the bot's environment - the owner has to add one to .env before secrets can be stored")
-    from cryptography.fernet import Fernet
-    return Fernet(key.strip().encode())
+VAULT = Vault()                                           # /data/secrets_manager/vault.enc; passphrase (or legacy VAULT_KEY) from env
 
 
 def vault_load():
-    if not VAULT_FILE.exists() or not VAULT_FILE.read_bytes().strip():
-        return {}
-    return json.loads(_fernet().decrypt(VAULT_FILE.read_bytes()).decode())
+    try:
+        return VAULT.load()
+    except VaultError as e:
+        raise ToolError(f"{e} - the owner fixes this in the console or .env")
 
 
 def vault_save(data):
-    VAULT_FILE.parent.mkdir(parents=True, exist_ok=True)
-    VAULT_FILE.write_bytes(_fernet().encrypt(json.dumps(data).encode()))
+    try:
+        VAULT.save(data)
+    except VaultError as e:
+        raise ToolError(str(e))
 
 
 def secret_env(names):
@@ -179,8 +179,9 @@ Your machine - you are root in your own Debian container, and `shell` and `insta
   with the `secrets` tool (set) - ideally by DM - or the owner puts them in the bot's .env. Never write a
   secret into code, never save one under /data, never echo one into a reply, and never ask for one you
   could declare instead. Already available to any tool that declares the name: DISCORD_TOKEN (this bot's own
-  Discord token, for anything on the Discord API) and ANTHROPIC_API_KEY - use those names, do not invent new
-  ones or ask people for them.
+  Discord token, for anything on the Discord API), ANTHROPIC_API_KEY and, when the house uses it, ELEVENLABS_API_KEY -
+  use those names, do not invent new ones or ask people for them. The owner adds and changes secrets from their PC
+  in the console; people should not paste keys into chat.
 When you make a tool or install something, say so in one short line.
 """
 FORGE_GUIDE = """
@@ -325,14 +326,18 @@ def attach_file(path, note=None, ctx=None):
     ctx["files"].append((str(p), (note or "").strip()[:200]))
     return f"attached {p.name} ({size / 1024:.0f} KB); it goes out with your reply - mention it in one line, do not paste its contents"
 
-_client = None
+_client, _client_key = None, None
 
 
 def get_client():
-    """Created on first use, so the container can start (and idle) without an API key configured."""
-    global _client
-    if _client is None:
-        _client = anthropic.Anthropic()
+    """The Anthropic client, built from the key in the vault (env as fallback) and rebuilt whenever that key changes, so a
+    key changed in the console applies to the next message with no restart. Created on first use, so the container can
+    start (and idle) without a key configured."""
+    global _client, _client_key
+    key = secret_env(["ANTHROPIC_API_KEY"]).get("ANTHROPIC_API_KEY")
+    if _client is None or key != _client_key:
+        _client = anthropic.Anthropic(api_key=key) if key else anthropic.Anthropic()
+        _client_key = key
     return _client
 
 
@@ -1257,8 +1262,17 @@ def run_discord(token):
                     print(f"could not post attachment for voice reply: {type(e).__name__}: {e}", flush=True)
             return web.json_response({"reply": reply, "notes": list(dict.fromkeys(notes))})
 
+        async def handle_secrets(req):
+            """The sibling containers' way to the vault: only the bootstrap names, only with the internal token, only on the
+            compose network. The voice bot gets its Discord token and ElevenLabs key here; the forge gets the model key."""
+            if req.headers.get("X-Internal-Token") != token:
+                return web.json_response({"error": "unauthorized"}, status=401)
+            wanted = [n for n in (req.query.get("names") or "").split(",") if n in VAULT_BOOTSTRAP]
+            return web.json_response({"secrets": secret_env(wanted)})
+
         app = web.Application()
         app.router.add_post("/ask", handle_ask)
+        app.router.add_get("/secrets", handle_secrets)
         app.router.add_get("/health", lambda r: web.json_response({"ok": True, "tools": len(tool_specs()) - len(META_TOOLS)}))
         runner = web.AppRunner(app)
         await runner.setup()
@@ -1346,9 +1360,9 @@ def run_discord(token):
 def run_ideas_once(dry):
     """`bot.py --ideas [--dry]`: a second, short-lived Discord login that reads the day, proposes, posts (or prints) and exits."""
     import discord
-    token = os.environ.get("DISCORD_TOKEN")
+    token = secret_env(["DISCORD_TOKEN"]).get("DISCORD_TOKEN")
     if not token:
-        print("DISCORD_TOKEN not set", flush=True)
+        print("no DISCORD_TOKEN in the vault or the environment", flush=True)
         return 1
     intents = discord.Intents.default()
     intents.message_content = True
@@ -1376,6 +1390,10 @@ def main():
     if "--secret-set" in sys.argv:                 # value read from stdin so it never appears in a command line or the chat
         name = sys.argv[sys.argv.index("--secret-set") + 1]
         print(json.dumps(secrets_tool("set", name, sys.stdin.read().strip(), "set by the owner from the command line"))); return 0
+    if "--secret-get" in sys.argv:                 # owner-only by construction: needs a shell in the container
+        name = sys.argv[sys.argv.index("--secret-get") + 1]
+        v = vault_load().get(name)
+        print(v["value"] if v else f"no secret named {name}", end="" if v else "\n"); return 0 if v else 1
     if "--tools" in sys.argv:
         for spec in tool_specs()[len(META_TOOLS):]:
             print(f"{spec['name']:<24} {spec['description'].splitlines()[0]}")
@@ -1388,13 +1406,19 @@ def main():
         return 0
     if "--ideas" in sys.argv:                      # run the daily review now; --dry prints instead of posting
         return run_ideas_once(dry="--dry" in sys.argv)
-    token = os.environ.get("DISCORD_TOKEN")
+    try:                                           # say so plainly if the vault cannot be opened; secret_env would just fall back to env
+        VAULT.load()
+        print(f"vault: {VAULT.path} v{VAULT.version() or 0}, {len(VAULT.names())} secrets", flush=True)
+    except VaultError as e:
+        print(f"warning: vault unreadable - {e}", flush=True)
+    boot = secret_env(["DISCORD_TOKEN", "ANTHROPIC_API_KEY"])
+    token = boot.get("DISCORD_TOKEN")
     if not token:
-        print("DISCORD_TOKEN not set — idling. Put it in bots/example-bot/.env and restart the container.", flush=True)
+        print("no DISCORD_TOKEN in the vault or .env — idling. Add it in the console (console.ps1) and restart the container.", flush=True)
         while True:
             time.sleep(3600)
-    if not os.environ.get("ANTHROPIC_API_KEY"):
-        print("warning: ANTHROPIC_API_KEY not set — Claude calls will fail", flush=True)
+    if not boot.get("ANTHROPIC_API_KEY"):
+        print("warning: no ANTHROPIC_API_KEY in the vault or .env — Claude calls will fail until one is added in the console", flush=True)
     if not TOOL_CREATORS:
         print("warning: TOOL_CREATORS is empty — anyone who can talk to this bot can run shell "
               "and install software in this container", flush=True)

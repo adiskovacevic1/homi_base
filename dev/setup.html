@@ -81,6 +81,15 @@
   .people li.picked { border-color:var(--phos); background:#0a2214; }
   .people img { width:28px; height:28px; border-radius:50%; background:#0a1a10; }
   .people small { color:var(--muted); }
+  table.vault { width:100%; border-collapse:collapse; font-size:15px; margin-top:6px; }
+  table.vault th { text-align:left; color:var(--muted); font-weight:normal; text-transform:uppercase; letter-spacing:1px; font-size:13px; padding:4px 8px; border-bottom:1px solid var(--line); }
+  table.vault td { padding:7px 8px; border-bottom:1px solid var(--line); vertical-align:top; }
+  table.vault td.n { color:var(--phos); font-weight:bold; white-space:nowrap; } table.vault td.acts { white-space:nowrap; text-align:right; }
+  table.vault td.acts button { padding:4px 8px; font-size:13px; margin-left:4px; }
+  table.vault .tag { display:inline-block; margin-left:6px; padding:0 6px; border:1px solid var(--amber); color:var(--amber); border-radius:3px; font-size:12px; }
+  table.vault tr.edit td { background:#050c07; } table.vault tr.edit input { margin:2px 0; }
+  .revealed { background:#030704; border:1px dashed var(--amber); padding:6px 10px; border-radius:3px; word-break:break-all; user-select:all; }
+  #settings-form label { margin-top:10px; } #settings-form .help { margin:2px 0 0; font-size:13.5px; }
   .kit-existing label { display:flex; gap:10px; align-items:center; text-transform:none; letter-spacing:0; color:var(--amber); } .kit-existing label::before{ content:""; } .kit-existing input { width:auto; accent-color:var(--phos); }
   code { background:#030704; border:1px solid var(--line); padding:0 6px; border-radius:3px; color:var(--phos-soft); font-size:15px; }
   .muted { color:var(--muted); }
@@ -207,6 +216,16 @@
     <p class="help" style="margin-top:6px">The kit becomes a small git repo either way, so every tool the bot builds is a commit. With a URL here it also has somewhere to push; run <code>git push -u origin main</code> in the kit folder when you want it backed up.</p>
   </section>
 
+  <section data-step="VAULT" id="vaultsec">
+    <h2>The vault</h2>
+    <p class="help">Every key the bot uses, Discord, Anthropic, ElevenLabs and whatever its tools need later, goes into one encrypted file
+      on this PC. Its passphrase is the one thing to keep safe: <b>file + passphrase = a complete backup</b>. You can change any key
+      later from the console without touching Discord or the terminal.</p>
+    <label for="passphrase">Vault passphrase</label>
+    <div class="row"><input id="passphrase" type="password" autocomplete="new-password" spellcheck="false"><button type="button" onclick="reveal('passphrase')">show</button><button type="button" onclick="suggestPass()">suggest</button></div>
+    <div class="status" id="s-passphrase"></div>
+  </section>
+
   <section data-step="EXISTING" id="existing" style="display:none; border-color:var(--amber)">
     <h2 style="color:var(--amber); text-shadow:none">A configuration already exists on this PC</h2>
     <p class="help">Saving replaces the bot's token, keys and settings with what is on this page. The current files are backed up
@@ -214,7 +233,7 @@
       already use keep working. If you only wanted a look, use <b>abort</b>.</p>
     <div class="kit-existing" style="display:block">
       <label><input type="checkbox" id="replace"> Replace the existing configuration</label>
-      <label><input type="checkbox" id="fresh_secrets"> Also generate a new vault key (the stored secrets become unreadable; only for a truly fresh start)</label>
+      <label><input type="checkbox" id="fresh_secrets"> Also start a new vault with a new passphrase (the stored secrets become unreadable; only for a truly fresh start)</label>
     </div>
   </section>
 
@@ -226,8 +245,50 @@
   <div class="problems" id="problems"></div>
   </form>
 
+  <section id="console" data-step="CONSOLE" style="display:none">
+    <h2>Vault</h2>
+    <p class="help">Every key the bot uses, in one encrypted file on this PC (<code id="vault-path"></code>). Values are never shown unless
+      you ask and type the passphrase. A change to the Discord token needs a restart, which happens when you finish here;
+      everything else applies to the bot's next use.</p>
+    <table class="vault" id="vtable"><thead><tr><th>name</th><th>note</th><th>updated</th><th></th></tr></thead><tbody></tbody></table>
+    <div class="status" id="s-vault"></div>
+    <label>Add a secret</label>
+    <div class="row" style="flex-wrap:wrap">
+      <input id="new-name" placeholder="NAME_LIKE_THIS" style="flex:1; min-width:180px; text-transform:uppercase">
+      <input id="new-value" type="password" placeholder="value" autocomplete="off" style="flex:2; min-width:220px">
+      <input id="new-note" placeholder="note (what it is for)" style="flex:2; min-width:200px">
+      <button type="button" onclick="addSecret()">add</button>
+    </div>
+    <p class="help" style="margin-top:6px">Names are what a tool declares in its spec; the bot's own are <code>DISCORD_TOKEN</code>, <code>ANTHROPIC_API_KEY</code>,
+      <code>ELEVENLABS_API_KEY</code>, <code>ELEVEN_VOICE_ID</code>.</p>
+
+    <h2 style="margin-top:22px">Settings</h2>
+    <div id="settings-form"></div>
+    <div class="row" style="margin-top:8px"><button type="button" onclick="saveSettings()">save settings</button><span class="status" id="s-settings" style="margin:0"></span></div>
+
+    <h2 style="margin-top:22px">Backup</h2>
+    <p class="help">The exported file is encrypted; keep it anywhere. To restore on this or another PC, import it with its passphrase.</p>
+    <div class="row" style="flex-wrap:wrap; gap:10px">
+      <button type="button" onclick="exportVault()">export vault</button>
+      <input type="file" id="import-file" style="flex:1; min-width:200px">
+      <input id="import-pass" type="password" placeholder="that file's passphrase" style="flex:1; min-width:180px">
+      <button type="button" onclick="importVault()">import</button>
+    </div>
+    <div class="status" id="s-backup"></div>
+
+    <div class="actions" style="margin-top:22px">
+      <span class="status muted" id="s-restart" style="margin:0"></span>
+      <button type="button" class="primary" onclick="finishConsole()">▶ Finish</button>
+    </div>
+  </section>
+
   <section id="result" data-step="ONLINE">
     <h2 class="big typed">Configuration written. Bringing the bot up.</h2>
+    <div id="passbox" style="display:none; border:1px solid var(--amber); border-radius:4px; padding:12px 14px; margin:10px 0; background:#0b0a04">
+      <div style="color:var(--amber); font:15px var(--mono); letter-spacing:1px">VAULT PASSPHRASE · write it down</div>
+      <div id="passvalue" style="font:28px var(--display); color:var(--amber); margin:6px 0; user-select:all"></div>
+      <div class="help" style="margin:0">It is also in <code>bots/example-bot/.env</code>. With it and the vault file everything can be restored; without it, nothing can.</div>
+    </div>
     <div id="summary"></div>
     <a id="invite" class="invite" target="_blank" rel="noopener" style="display:none">▶ Invite the bot to your server</a>
     <p class="help">The installer is starting the containers. Then @mention the bot in a channel. It answers with what it has, and when a question needs something new it has a tool built and follows up.</p>
@@ -323,7 +384,12 @@ async function boot() {
   li.innerHTML = state.config_exists
     ? "<span class='warn'>[!!]</span> a configuration exists on this PC — saving needs an explicit tick at the bottom; abort to leave it alone"
     : "<span class='ok'>[OK]</span> fresh install — no configuration yet";
+  if (state.mode === "console") { startConsole(); return; }
   if (state.config_exists) { $("existing").style.display = "block"; $("submit").textContent = "▶ Replace and restart bot"; }
+  if (state.config_exists && state.vault?.has_passphrase) {
+    $("vaultsec").style.display = "none";                                   // reconfigure: the passphrase is kept unless "fresh" is ticked
+    $("fresh_secrets").addEventListener("change", () => { $("vaultsec").style.display = $("fresh_secrets").checked ? "block" : "none"; if ($("fresh_secrets").checked) suggestPass(); });
+  } else { suggestPass(); }
   const kits = Object.keys(state.kits);
   await add(kits.length ? `<span class='ok'>[OK]</span> kits on disk: ${kits.map(k => `<b>${esc(k)}</b> (${state.kits[k]} tools)`).join(", ")}` : "<span class='ok'>[OK]</span> no tool kits yet — a new one starts with the nine basics", 400);
   await add("<span class='ok'>[OK]</span> awaiting operator input<span class='cursor'></span>", 400);
@@ -346,6 +412,99 @@ async function init() {
   setTimeout(() => { $("kit").value = kitDefault(""); checkKit(); }, 1200);   // after the boot log has fetched the kits
 }
 const kitDefault = (name) => (name || "home").toLowerCase().replace(/[^a-z0-9-]+/g, "-").replace(/^-+|-+$/g, "") || "home";
+function suggestPass() { $("passphrase").value = state.suggested_passphrase || ""; status("passphrase", "warn", "Suggested. Keep it, or type your own (8+ characters). You will see it once more after saving."); }
+
+// ---------------------------------------------------------------- the console: an existing install's keys and settings
+let vaultData = { secrets: [], needs_restart: [] };
+async function startConsole() {
+  $("form").classList.add("hide"); $("console").style.display = "block";
+  const logo = document.querySelector("pre.logo");
+  if (logo) logo.textContent = logo.textContent.replace("household bot · setup console", "household bot · keys & settings console");
+  const ul = $("boot"); const li = document.createElement("li"); li.innerHTML = "<span class='ok'>[OK]</span> console mode — edits apply to the bot on this PC"; ul.appendChild(li);
+  await loadVault(); await loadSettings();
+}
+async function loadVault() {
+  const r = await api("/api/vault");
+  if (r.error) { status("vault", "bad", r.error); return; }
+  vaultData = r; $("vault-path").textContent = r.path;
+  const tb = $("vtable").querySelector("tbody"); tb.innerHTML = "";
+  const order = (s) => (r.bootstrap.indexOf(s.name) + 1 || 99);
+  for (const s of [...r.secrets].sort((a, b) => order(a) - order(b) || a.name.localeCompare(b.name))) {
+    const tr = document.createElement("tr");
+    tr.innerHTML = `<td class="n">${esc(s.name)}${s.needs_restart ? '<span class="tag">restart</span>' : ""}</td><td>${esc(s.note || "")}<div class="muted" style="font-size:12.5px">${s.length} chars</div></td><td class="muted">${esc((s.updated || "").slice(0, 16))}</td>
+      <td class="acts"><button type="button" onclick="revealSecret('${esc(s.name)}', this)">reveal</button><button type="button" onclick="changeSecret('${esc(s.name)}', this)">change</button><button type="button" onclick="deleteSecret('${esc(s.name)}')">delete</button></td>`;
+    tb.appendChild(tr);
+  }
+  status("vault", r.secrets.length ? "ok" : "muted", r.secrets.length ? `${r.secrets.length} secrets, vault v${r.version}` : "the vault is empty");
+  const missing = ["DISCORD_TOKEN", "ANTHROPIC_API_KEY"].filter(n => !r.secrets.some(s => s.name === n));
+  if (missing.length) status("vault", "warn", `missing: ${missing.join(", ")} — the bot cannot run without these; add them below`);
+}
+function rowAfter(btn, html) {
+  const tr = btn.closest("tr"); const next = tr.nextElementSibling;
+  if (next && next.classList.contains("edit")) next.remove();
+  const e = document.createElement("tr"); e.className = "edit"; e.innerHTML = `<td colspan="4">${html}</td>`; tr.after(e); return e;
+}
+async function revealSecret(name, btn) {
+  const pass = prompt(`Type the vault passphrase to reveal ${name}:`); if (pass == null) return;
+  const r = await api("/api/vault/reveal", { name, passphrase: pass });
+  if (!r.ok) return status("vault", "bad", r.error);
+  const e = rowAfter(btn, `<div class="revealed" id="rv">${esc(r.value)}</div><div class="row" style="margin-top:6px"><button type="button" onclick="navigator.clipboard.writeText(document.getElementById('rv').textContent).then(()=>status('vault','ok','copied'))">copy</button><button type="button" onclick="this.closest('tr').remove()">hide</button><span class="muted" style="font-size:13px">hides itself in 30 s</span></div>`);
+  setTimeout(() => e.remove(), 30000);
+}
+function changeSecret(name, btn) {
+  const e = rowAfter(btn, `<div class="row" style="flex-wrap:wrap"><input type="password" id="cv" placeholder="new value for ${esc(name)}" autocomplete="off" style="flex:2; min-width:220px"><input id="cn" placeholder="note (optional)" style="flex:1; min-width:160px"><button type="button" id="cs">save</button><button type="button" onclick="this.closest('tr').remove()">cancel</button></div>`);
+  e.querySelector("#cs").onclick = async () => {
+    const r = await api("/api/vault/set", { name, value: e.querySelector("#cv").value.trim(), note: e.querySelector("#cn").value.trim() || undefined });
+    if (!r.ok) return status("vault", "bad", r.error);
+    await loadVault(); status("vault", "ok", `${name} saved — ${r.applies}`); if (r.needs_restart) needRestart();
+  };
+  e.querySelector("#cv").focus();
+}
+async function deleteSecret(name) {
+  if (!confirm(`Delete ${name} from the vault?`)) return;
+  const r = await api("/api/vault/delete", { name });
+  if (!r.ok) return status("vault", "bad", r.error);
+  await loadVault(); status("vault", "ok", `${name} deleted`);
+}
+async function addSecret() {
+  const name = $("new-name").value.trim().toUpperCase(), value = $("new-value").value.trim(), note = $("new-note").value.trim();
+  const r = await api("/api/vault/set", { name, value, note });
+  if (!r.ok) return status("vault", "bad", r.error);
+  $("new-name").value = $("new-value").value = $("new-note").value = "";
+  await loadVault(); status("vault", "ok", `${name} ${r.replaced ? "replaced" : "added"} — ${r.applies}`); if (r.needs_restart) needRestart();
+}
+const SETTING_HELP = { TOOL_CREATORS: "Discord user ids allowed to give the bot tools, a shell and installs (comma-separated)", OPEN_CHANNELS: "channels it answers in without an @mention, by name or id; empty = mention everywhere",
+  IDEAS_AT: "local time for the daily tool-ideas post (HH:MM); empty = off", IDEAS_CHANNEL: "where the ideas post goes; empty = the busiest channel", BOT_SYSTEM: "the bot's system prompt", FORGE_URL: "the tool builder on the dev box; empty turns request_tool off",
+  WAKE_WORDS: "voice bot wake words, comma-separated", AUTO_JOIN: "voice channels the voice bot joins by itself (names or ids)", TZ: "timezone for logs and the daily post", KIT: "the tool kit folder under bots/example-bot/kits (changing it switches kits)" };
+let settingsData = {};
+async function loadSettings() {
+  settingsData = await api("/api/settings"); const f = $("settings-form"); f.innerHTML = "";
+  for (const group of ["bot", "voice", "root"]) for (const [k, v] of Object.entries(settingsData[group] || {})) {
+    f.insertAdjacentHTML("beforeend", `<label for="st-${group}-${k}">${esc(k)}</label><input id="st-${group}-${k}" data-group="${group}" data-key="${esc(k)}" value="${esc(v)}"><p class="help">${esc(SETTING_HELP[k] || "")}</p>`);
+  }
+}
+async function saveSettings() {
+  const body = { bot: {}, voice: {}, root: {} };
+  for (const i of $("settings-form").querySelectorAll("input")) if (i.value !== (settingsData[i.dataset.group] || {})[i.dataset.key]) body[i.dataset.group][i.dataset.key] = i.value.trim();
+  const r = await api("/api/settings", body);
+  if (!r.ok) return status("settings", "bad", r.error);
+  status("settings", "ok", r.changed.length ? `saved: ${r.changed.map(c => c.split(":")[1]).join(", ")} — applied on finish` : "nothing changed");
+  if (r.changed.length) { needRestart(); await loadSettings(); }
+}
+function needRestart() { $("s-restart").className = "status warn"; $("s-restart").textContent = "a change needs the containers restarted — Finish does that"; }
+function exportVault() { window.location.href = "/api/vault/export?key=" + encodeURIComponent(KEY); status("backup", "ok", "downloading the encrypted vault file"); }
+async function importVault() {
+  const f = $("import-file").files[0]; if (!f) return status("backup", "bad", "pick the vault file first");
+  const content = await new Promise((res, rej) => { const rd = new FileReader(); rd.onload = () => res(rd.result); rd.onerror = rej; rd.readAsDataURL(f); });
+  const r = await api("/api/vault/import", { content, passphrase: $("import-pass").value.trim() });
+  if (!r.ok) return status("backup", "bad", r.error);
+  status("backup", "ok", `imported ${r.count} secrets; the passphrase you gave is now this install's`); needRestart(); await loadVault();
+}
+async function finishConsole() {
+  const restart = $("s-restart").textContent !== "";
+  crtOff(restart ? "console closed · restarting the bot with the changes · you can close this tab" : "console closed · changes applied live · you can close this tab");
+  await api("/api/done", {});
+}
 function checkTz() { state.checks.tz = /^[A-Za-z_]+(\/[A-Za-z0-9_+-]+)*$/.test($("tz").value.trim()); $("tz").className = state.checks.tz ? "ok" : "bad"; meter(); }
 
 async function checkDiscord() {
@@ -453,17 +612,19 @@ async function saveAll() {
   const body = { token: $("token").value.trim(), anthropic: $("anthropic").value.trim(), owners: $("owners").value.trim(), name: $("name").value.trim(),
                  eleven: $("eleven").value.trim(), voice: $("eleven").value.trim() ? $("voice").value : "", auto: $("auto").value.trim(), kit: $("kit").value.trim(),
                  kit_remote: $("kit_remote").value.trim(), tz: $("tz").value.trim(), app_id: state.discord?.app_id || "", keep_kit: $("keep_kit").checked,
-                 replace: $("replace").checked, fresh_secrets: $("fresh_secrets").checked };
+                 replace: $("replace").checked, fresh_secrets: $("fresh_secrets").checked, passphrase: $("passphrase").value };
   const r = await api("/api/write", body);
   $("submit").disabled = false; $("submit").textContent = "▶ Initialize bot";
   if (!r.ok) { $("problems").textContent = (r.problems || [r.error || "something went wrong"]).join("\n"); return; }
   $("form").classList.add("hide"); $("result").classList.add("show"); window.scrollTo({ top: 0, behavior: "smooth" });
+  if (r.passphrase) { $("passbox").style.display = "block"; $("passvalue").textContent = r.passphrase; }
   $("summary").innerHTML = `<p>Bot: <b>${esc(state.discord?.name || r.name)}</b> · owner(s): <code>${esc(r.owners)}</code><br>
+    Vault: <code>${esc(r.vault)}</code> (${r.vault_count} secrets)${(r.notes || []).map(n => "<br>Note: " + esc(n)).join("")}<br>
     Tool kit: <code>bots/example-bot/kits/${esc(r.kit)}</code> ${r.kit_tools ? `(${r.kit_tools} tools)` : "(new — the starter tools are added on first start)"} — ${esc(r.kit_repo)}<br>
     Speech: ${esc(r.speech)} · voice channel auto-join: ${esc(r.auto_join)}<br>
     Files written: <code>${r.files.map(esc).join("</code>, <code>")}</code>${r.backups?.length ? `<br>Previous configuration backed up: <code>${r.backups.map(esc).join("</code>, <code>")}</code>${r.kept_secrets?.length ? " · kept " + r.kept_secrets.join(" and ") : ""}` : ""}</p>`;
   if (r.invite) { $("invite").href = r.invite; $("invite").style.display = "inline-block"; }
-  powerDown(8);
+  powerDown(r.passphrase ? 45 : 8);                                          // a new passphrase deserves time to be written down
 }
 
 // the CRT switches off: a countdown people can cancel, then the picture collapses to a line, a dot, and black

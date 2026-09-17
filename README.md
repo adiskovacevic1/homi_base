@@ -85,19 +85,37 @@ text-like files (`.txt`, `.md`, `.json`, `.csv`, code, logs) are read inline; an
 Images and PDFs are replaced by a one-line memo in the channel history after the reply, so later turns
 do not resend them.
 
-### Secrets
+### Secrets: one vault, one passphrase
 
-The bot process owns an encrypted vault (`data/secrets_manager/vault.enc`); the key is `VAULT_KEY` in `.env`, which
-tools cannot read (they see only `/data`). A tool declares the secret names it needs in its spec
-(`"secrets": ["XAI_API_KEY"]`, or the `secrets` argument of `create_tool`) and receives them as environment
-variables when it runs. There is no way for the model to read a value back: the `secrets` tool only lists,
-sets and deletes by name, and is restricted to `TOOL_CREATORS`. To load a secret without it ever appearing in
-chat:
+Every key the household's bot uses lives in one encrypted file, `bots/example-bot/data/secrets_manager/vault.enc`:
+its Discord token, the Anthropic key, the ElevenLabs key and voice, and every secret its tools declare. The file is
+opened with `VAULT_PASSPHRASE` from `bots/example-bot/.env` (setup asks for one, or suggests four words), which is the
+one thing to keep safe: **file + passphrase = a complete backup**, and neither alone reveals anything. Tools see only
+`/data`, so they can read the file but never open it; a tool declares the names it needs in its spec (`"secrets":
+["XAI_API_KEY"]`) and gets them as environment variables when it runs. The bot's own keys are read the same way, so the
+voice bot and the forge fetch theirs from the text bot over the internal `/secrets` route instead of keeping copies.
+
+To add, view, change or delete a key from your PC:
+
+```bash
+./console.ps1        # or ./console.sh - a local page, same one-time key as the installer
+```
+
+It lists the vault (names, notes, dates; never values), adds or changes entries, reveals a value after you type the
+passphrase again, edits the settings (owners, channels, wake words, timezone, the daily ideas post), and exports or
+imports the vault file. A changed Anthropic or ElevenLabs key applies to the bot's next use with no restart; a changed
+Discord token or setting restarts the containers when you press **Finish**. Owners can also manage secrets from
+Discord with the bot's `secrets` tool (names only, values never shown), and from a shell:
 
 ```bash
 echo -n "the-value" | docker compose exec -T example-bot python bot.py --secret-set XAI_API_KEY
-docker compose exec -T example-bot python bot.py --secrets      # names and notes only
+docker compose exec -T example-bot python bot.py --secrets           # names and notes only
+docker compose exec -T example-bot python bot.py --secret-get XAI_API_KEY
 ```
+
+Reconfiguring with the installer keeps the passphrase and backs up the vault beside the env files; installs made before
+the passphrase existed (a random `VAULT_KEY`) keep working and are re-encrypted under the passphrase the next time
+setup runs.
 
 ### It writes its own tools
 

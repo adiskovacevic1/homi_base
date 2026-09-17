@@ -45,4 +45,5 @@ docker compose ps
 echo
 echo "Watch the bot:   docker compose logs -f example-bot"
 echo "Voice bot:       docker compose logs -f voice-bot"
-echo "Reconfigure:     ./install.sh   (or edit bots/*/.env and 'docker compose up -d')"
+echo "Keys & settings: ./console.sh   (change any key or setting from this PC; the vault applies live)"
+echo "Reconfigure:     ./install.sh   (the whole setup again; the vault passphrase is kept)"

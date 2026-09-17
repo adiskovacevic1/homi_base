@@ -13,17 +13,19 @@ Submit writes the same files through setup.write_files() and the server exits, s
 Env: SETUP_KEY (the one-time key; generated if missing), SETUP_PORT (8792), LAB_DIR (/lab), SETUP_SKIP_CHECKS=1 (tests only).
 Nothing here is stored or sent anywhere except the checks against the services whose keys you are entering.
 """
-import asyncio, os, re, secrets, sys
+import asyncio, json, os, re, secrets, sys, time
 from pathlib import Path
 
 import aiohttp
 from aiohttp import web
 
 import setup as cfgfile
+import vault as vaultlib
 
 PORT = int(os.environ.get("SETUP_PORT", "8792"))
 KEY = os.environ.get("SETUP_KEY") or secrets.token_urlsafe(16)
 SKIP_CHECKS = os.environ.get("SETUP_SKIP_CHECKS") == "1"
+MODE = "console" if os.environ.get("SETUP_MODE") == "console" or "--console" in sys.argv else "setup"   # console: edit keys and settings of an existing install
 PAGE = (Path(__file__).parent / "setup.html").read_text(encoding="utf-8")
 DISCORD = "https://discord.com/api/v10"
 MSG_CONTENT_FLAGS = (1 << 18) | (1 << 19)        # GATEWAY_MESSAGE_CONTENT, GATEWAY_MESSAGE_CONTENT_LIMITED
@@ -139,7 +141,145 @@ async def page(req):
 
 @guarded
 async def state(req):
-    return web.json_response({"kits": cfgfile.existing_kits(), "config_exists": cfgfile.config_exists(), "skip_checks": SKIP_CHECKS})
+    env = cfgfile.env_values(cfgfile.BOT_ENV)
+    v = cfgfile.current_vault()
+    vault_info = {"exists": bool(v and v.exists()), "version": v.version() if v else None, "has_passphrase": bool(env.get("VAULT_PASSPHRASE")),
+                  "legacy_key": bool(env.get("VAULT_KEY")), "path": str(cfgfile.VAULT_PATH.relative_to(cfgfile.LAB))}
+    if v and v.exists():
+        try:
+            vault_info["count"] = len(v.names()); vault_info["readable"] = True
+        except Exception as e:  # noqa
+            vault_info["readable"] = False; vault_info["error"] = str(e)
+    return web.json_response({"mode": MODE, "kits": cfgfile.existing_kits(), "config_exists": cfgfile.config_exists(),
+                              "skip_checks": SKIP_CHECKS, "vault": vault_info, "suggested_passphrase": vaultlib.suggest_passphrase()})
+
+
+def _vault_or_400():
+    v = cfgfile.current_vault()
+    if v is None:
+        raise web.HTTPBadRequest(text=json.dumps({"error": "no configuration on this PC yet - run the installer first"}), content_type="application/json")
+    return v
+
+
+@guarded
+async def vault_list(req):
+    v = _vault_or_400()
+    try:
+        return web.json_response({"secrets": v.listing(), "path": str(cfgfile.VAULT_PATH.relative_to(cfgfile.LAB)), "version": v.version(),
+                                  "bootstrap": list(vaultlib.BOOTSTRAP), "needs_restart": list(vaultlib.NEEDS_RESTART)})
+    except vaultlib.VaultError as e:
+        return web.json_response({"ok": False, "error": str(e)}, status=409)
+
+
+@guarded
+async def vault_set(req):
+    v = _vault_or_400()
+    body = await req.json()
+    name, value, note = cfgfile.clean(body.get("name")).upper(), cfgfile.clean(body.get("value")), cfgfile.clean(body.get("note"))[:200]
+    if not re.fullmatch(vaultlib.NAME_RE, name):
+        return web.json_response({"ok": False, "error": "name must look like an environment variable: XAI_API_KEY"}, status=400)
+    if not value:
+        return web.json_response({"ok": False, "error": "value is empty"}, status=400)
+    if name == "DISCORD_TOKEN" and not cfgfile.looks_like_discord_token(value):
+        return web.json_response({"ok": False, "error": "that does not look like a Discord bot token"}, status=400)
+    if name == "ANTHROPIC_API_KEY" and not value.startswith("sk-ant-"):
+        return web.json_response({"ok": False, "error": "Anthropic keys start with sk-ant-"}, status=400)
+    try:
+        out = v.set(name, value, note or None)
+    except vaultlib.VaultError as e:
+        return web.json_response({"ok": False, "error": str(e)}, status=409)
+    restart = name in vaultlib.NEEDS_RESTART
+    if restart:
+        cfgfile.RESTART_MARKER.write_text(f"{name} changed\n", encoding="utf-8")
+    return web.json_response({"ok": True, **out, "needs_restart": restart,
+                              "applies": "after `docker compose up -d` (the wrapper does it when you finish)" if restart else "live - the bot reads it on its next use"})
+
+
+@guarded
+async def vault_delete(req):
+    v = _vault_or_400()
+    name = cfgfile.clean((await req.json()).get("name")).upper()
+    try:
+        v.delete(name)
+    except KeyError:
+        return web.json_response({"ok": False, "error": f"no secret named {name}"}, status=404)
+    except vaultlib.VaultError as e:
+        return web.json_response({"ok": False, "error": str(e)}, status=409)
+    return web.json_response({"ok": True, "deleted": name})
+
+
+@guarded
+async def vault_reveal(req):
+    """A value, only after the passphrase is typed again: the page is local and the owner holds the passphrase, so this is
+    a deliberate act rather than something a glance at the screen gives away."""
+    v = _vault_or_400()
+    body = await req.json()
+    name, passphrase = cfgfile.clean(body.get("name")).upper(), cfgfile.clean(body.get("passphrase"))
+    if not passphrase or not v.check_passphrase(passphrase):
+        return web.json_response({"ok": False, "error": "wrong passphrase"}, status=403)
+    value = v.get(name)
+    if value is None:
+        return web.json_response({"ok": False, "error": f"no secret named {name}"}, status=404)
+    return web.json_response({"ok": True, "name": name, "value": value})
+
+
+SETTINGS = {"bot": ("TOOL_CREATORS", "OPEN_CHANNELS", "IDEAS_AT", "IDEAS_CHANNEL", "BOT_SYSTEM", "FORGE_URL"),
+            "voice": ("WAKE_WORDS", "AUTO_JOIN"), "root": ("TZ", "KIT")}
+
+
+@guarded
+async def settings_get(req):
+    return web.json_response({"bot": {k: v for k, v in cfgfile.env_values(cfgfile.BOT_ENV).items() if k in SETTINGS["bot"]},
+                              "voice": {k: v for k, v in cfgfile.env_values(cfgfile.VOICE_ENV).items() if k in SETTINGS["voice"]},
+                              "root": {k: v for k, v in cfgfile.env_values(cfgfile.ROOT_ENV).items() if k in SETTINGS["root"]}})
+
+
+@guarded
+async def settings_set(req):
+    body = await req.json()
+    changed = []
+    for group, path in (("bot", cfgfile.BOT_ENV), ("voice", cfgfile.VOICE_ENV), ("root", cfgfile.ROOT_ENV)):
+        wanted = {k: cfgfile.clean(str(v)) for k, v in (body.get(group) or {}).items() if k in SETTINGS[group]}
+        if "TOOL_CREATORS" in wanted and not all(p.strip().isdigit() for p in wanted["TOOL_CREATORS"].split(",") if p.strip()):
+            return web.json_response({"ok": False, "error": "TOOL_CREATORS is a comma-separated list of Discord user ids"}, status=400)
+        if wanted and path.exists():
+            changed += [f"{group}:{k}" for k in cfgfile.update_env(path, wanted)]
+    if changed:
+        cfgfile.RESTART_MARKER.write_text("settings changed: " + ", ".join(changed) + "\n", encoding="utf-8")
+    return web.json_response({"ok": True, "changed": changed, "needs_restart": bool(changed)})
+
+
+@guarded
+async def vault_export(req):
+    if not cfgfile.VAULT_PATH.exists():
+        return web.json_response({"error": "no vault file yet"}, status=404)
+    return web.Response(body=cfgfile.VAULT_PATH.read_bytes(), content_type="application/octet-stream",
+                        headers={"Content-Disposition": f'attachment; filename="vault-{time.strftime("%Y%m%d")}.enc"'})
+
+
+@guarded
+async def vault_import(req):
+    """Restore a vault file: it must open with the passphrase given; that passphrase then becomes this install's."""
+    import base64
+    body = await req.json()
+    passphrase, content = cfgfile.clean(body.get("passphrase")), body.get("content") or ""
+    try:
+        raw = base64.b64decode(content.split(",", 1)[-1])
+    except Exception:  # noqa
+        return web.json_response({"ok": False, "error": "could not read the file"}, status=400)
+    tmp = cfgfile.VAULT_PATH.with_name("vault.import.tmp")
+    tmp.parent.mkdir(parents=True, exist_ok=True)
+    tmp.write_bytes(raw)
+    try:
+        n = len(vaultlib.Vault(tmp, passphrase=passphrase).load())
+    except vaultlib.VaultError as e:
+        tmp.unlink(missing_ok=True)
+        return web.json_response({"ok": False, "error": f"that file does not open with that passphrase ({e})"}, status=403)
+    cfgfile.backup_existing()
+    os.replace(tmp, cfgfile.VAULT_PATH)
+    cfgfile.update_env(cfgfile.BOT_ENV, {"VAULT_PASSPHRASE": passphrase})
+    cfgfile.RESTART_MARKER.write_text("vault imported\n", encoding="utf-8")
+    return web.json_response({"ok": True, "count": n, "needs_restart": True})
 
 
 @guarded
@@ -177,25 +317,29 @@ async def check(req):
 @guarded
 async def write(req):
     body = await req.json()
-    cfg = {k: cfgfile.clean(str(body.get(k) or "")) for k in ("token", "anthropic", "owners", "name", "eleven", "voice", "auto", "kit", "app_id", "kit_remote", "tz")}
+    cfg = {k: cfgfile.clean(str(body.get(k) or "")) for k in ("token", "anthropic", "owners", "name", "eleven", "voice", "auto", "kit", "app_id", "kit_remote", "tz", "passphrase")}
     if not re.fullmatch(r"[A-Za-z_]+(/[A-Za-z0-9_+-]+)*", cfg["tz"] or ""):
         cfg["tz"] = "UTC"
     cfg["fresh_secrets"] = bool(body.get("fresh_secrets"))
-    problems = cfgfile.validate(cfg)
-    if cfgfile.config_exists() and not body.get("replace"):
+    reconfig = cfgfile.config_exists()
+    problems = [] if reconfig else cfgfile.validate(cfg)      # on a reconfigure a blank token/key means keep; write_files validates after filling
+    if reconfig and not body.get("replace"):
         problems.append("a configuration already exists on this PC; tick 'replace the existing configuration' to overwrite it "
-                        "(it is backed up first, and the vault key is kept)")
+                        "(it is backed up first, and the vault passphrase is kept)")
     kits = cfgfile.existing_kits()
     if kits.get(cfg["kit"]) and not body.get("keep_kit"):
         problems.append(f"kits/{cfg['kit']} already has {kits[cfg['kit']]} tools; confirm it is this household's kit or pick another name")
     if problems:
         return web.json_response({"ok": False, "problems": problems}, status=400)
-    if not SKIP_CHECKS:
+    if not SKIP_CHECKS and cfg["token"]:
         d = await check_discord(cfg["token"])
         if not d.get("ok"):
             return web.json_response({"ok": False, "problems": [d.get("error", "Discord token check failed")]}, status=400)
         cfg["app_id"] = cfg["app_id"] or d.get("app_id", "")
-    out = cfgfile.write_files(cfg)
+    try:
+        out = cfgfile.write_files(cfg)
+    except ValueError as e:
+        return web.json_response({"ok": False, "problems": str(e).split("; ")}, status=400)
     asyncio.get_running_loop().call_later(1.5, DONE.set)       # let the response leave, then let the installer continue
     return web.json_response({"ok": True, **out})
 
@@ -215,6 +359,15 @@ async def main():
     app.router.add_post("/api/check/{what}", check)
     app.router.add_post("/api/write", write)
     app.router.add_post("/api/cancel", cancel)
+    app.router.add_post("/api/done", cancel)                 # the console's "finish": same shutdown, the wrapper then restarts if needed
+    app.router.add_get("/api/vault", vault_list)
+    app.router.add_post("/api/vault/set", vault_set)
+    app.router.add_post("/api/vault/delete", vault_delete)
+    app.router.add_post("/api/vault/reveal", vault_reveal)
+    app.router.add_get("/api/vault/export", vault_export)
+    app.router.add_post("/api/vault/import", vault_import)
+    app.router.add_get("/api/settings", settings_get)
+    app.router.add_post("/api/settings", settings_set)
     app.router.add_get("/health", lambda r: web.json_response({"ok": True}))
     assets = Path(__file__).parent / "assets"                # the console's sounds; small, and nothing secret in them
     if assets.is_dir():
@@ -223,7 +376,7 @@ async def main():
     await runner.setup()
     await web.TCPSite(runner, "0.0.0.0", PORT).start()      # the installer publishes this port on 127.0.0.1 only
     print(f"SETUP_URL=http://localhost:{PORT}/setup?key={KEY}", flush=True)
-    print("open that link in a browser on this PC; this waits until the form is submitted (Ctrl+C to abort)", flush=True)
+    print(f"[{MODE}] open that link in a browser on this PC; this waits until you finish there (Ctrl+C to abort)", flush=True)
     await DONE.wait()
     await runner.cleanup()
 

@@ -1,0 +1,9 @@
+# The dev image builds from the repo root (to pick up bots/example-bot/vault.py); keep data, kits, secrets and git out of the context.
+.git
+**/.env
+**/.env.bak-*
+bots/*/data
+bots/*/kits
+**/__pycache__
+**/node_modules
+lan-helper

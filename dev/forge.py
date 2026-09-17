@@ -67,17 +67,39 @@ def token():
     return env_value("INTERNAL_TOKEN")
 
 
+BRAIN = os.environ.get("BRAIN_URL", "http://example-bot:8790").replace("/ask", "").rstrip("/")
+
+
+def brain_secret(name):
+    """A bootstrap secret from the bot's vault, through its internal /secrets route (compose network, shared token)."""
+    import urllib.request
+    tok = token()
+    if not tok:
+        return ""
+    try:
+        req = urllib.request.Request(f"{BRAIN}/secrets?names={name}", headers={"X-Internal-Token": tok})
+        with urllib.request.urlopen(req, timeout=5) as r:
+            return (json.loads(r.read().decode()).get("secrets") or {}).get(name, "")
+    except Exception:  # noqa - the bot may be down; callers fall back
+        return ""
+
+
 def claude_auth(env):
     """How the headless Claude Code authenticates: the dev box's own login when someone has run `claude` and logged in
-    here (the credentials live in the /root volume), else the bot's API key, billed per token like the bot itself."""
+    here (the credentials live in the /root volume), else the bot's API key from its vault (via the brain) or from the
+    environment, billed per token like the bot itself."""
     if (Path.home() / ".claude" / ".credentials.json").exists():
         env.pop("ANTHROPIC_API_KEY", None)
         return "dev box login"
+    key = brain_secret("ANTHROPIC_API_KEY")
+    if key:
+        env["ANTHROPIC_API_KEY"] = key
+        return "the bot's API key (vault)"
     key = env_value("ANTHROPIC_API_KEY")
     if key:
         env["ANTHROPIC_API_KEY"] = key
-        return "the bot's API key"
-    return "none - log in with `docker compose exec dev claude` or set ANTHROPIC_API_KEY"
+        return "the bot's API key (env)"
+    return "none - add ANTHROPIC_API_KEY in the console, or log in with `docker compose exec dev claude`"
 
 
 def log(msg):

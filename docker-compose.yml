@@ -8,7 +8,9 @@
 
 services:
   dev:
-    build: ./dev
+    build:
+      context: .                     # the repo root, so the image can take vault.py from the bot (one copy of the vault code)
+      dockerfile: dev/Dockerfile
     hostname: bot-dev
     volumes:
       - ./bots:/bots                    # your bot source, shared with Windows
