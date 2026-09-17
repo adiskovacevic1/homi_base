@@ -1007,6 +1007,20 @@ async def first_day(bot, histories, guild=None, dry=False, force=False):
     todo = [g for g in guilds if dry or force or str(g.id) not in done]
     if not todo:
         return None
+    # Say hello at once, in its own channel, before the slow part: discovery and the model take a minute, and a silent
+    # bot after the install looks broken.
+    homes = {}
+    for g in todo:
+        if dry:
+            continue
+        home = await home_channel(g)
+        if home and home.permissions_for(g.me).send_messages:
+            homes[g.id] = home
+            try:
+                await home.send(f"Hi, I'm {g.me.display_name if g.me else bot.user.name}, just moved in. Give me a minute to look around the house, "
+                                f"then I'll introduce myself properly here. Hold tight.")
+            except Exception as e:  # noqa
+                print(f"first day: greeting in #{home.name} failed: {e}", flush=True)
     house = await asyncio.to_thread(discover_house)
     kit = [s["name"] for s in tool_specs()[len(META_TOOLS):]]
     voice = bool(secret_env(["ELEVENLABS_API_KEY"]).get("ELEVENLABS_API_KEY"))
@@ -1023,8 +1037,8 @@ async def first_day(bot, histories, guild=None, dry=False, force=False):
             text = key_needed([e.key], "I need the brain's key before I can introduce myself")
         if not text:
             continue
-        home = None if dry else await home_channel(g)                  # its own channel first; else the server's system channel
-        target = home if home and home.permissions_for(g.me).send_messages else \
+        home = homes.get(g.id)                                          # its own channel first; else the server's system channel
+        target = home if home else \
             g.system_channel if g.system_channel and g.system_channel.permissions_for(g.me).send_messages else \
             next((c for c in g.text_channels if c.permissions_for(g.me).send_messages), None)
         if dry:

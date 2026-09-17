@@ -113,7 +113,9 @@
     100% { transform:scale(0,0); opacity:0; }
   }
   body.dead { background:#000; animation:none; } body.dead::before, body.dead::after { display:none; }
-  #dead { display:none; position:fixed; inset:0; align-items:center; justify-content:center; color:#123a20; font:16px var(--mono); letter-spacing:1px; animation:deadfade 3s ease-in forwards; }
+  #dead { display:none; position:fixed; inset:0; flex-direction:column; gap:26px; align-items:center; justify-content:center; color:#123a20; font:16px var(--mono); letter-spacing:1px; animation:deadfade 3s ease-in forwards; }
+  .closeterm { background:transparent; color:#1d5a30; border:1px solid #1d5a30; border-radius:3px; padding:8px 18px; font:15px var(--mono); letter-spacing:1px; cursor:pointer; }
+  .closeterm:hover { color:#3fbf63; border-color:#3fbf63; }
   @keyframes deadfade { from { opacity:0 } to { opacity:1 } }
   #shutdown a { color:var(--cyan); }
   @media (prefers-reduced-motion: reduce) { *, *::before, *::after { animation:none !important; transition:none !important; } .boot li { opacity:1; transform:none; } main.crt-off { display:none; } #dead { opacity:1; } }
@@ -314,12 +316,11 @@
       <div class="help" style="margin:0">It is also in <code>bots/example-bot/.env</code>. With it and the vault file everything can be restored; without it, nothing can.</div>
     </div>
     <div id="summary"></div>
-    <a id="invite" class="invite" target="_blank" rel="noopener" style="display:none">▶ Invite the bot to your server</a>
-    <p class="help">The installer is starting the containers. Then @mention the bot in a channel. It answers with what it has, and when a question needs something new it has a tool built and follows up.</p>
+    <p class="help">The installer is starting the containers. The bot makes itself a <code>#bot</code> channel in your server and says hello there; talk to it in that channel, no @mention needed. It answers with what it has, and when a question needs something new it has a tool built and follows up.</p>
     <p class="status muted" id="shutdown" style="display:none"></p>
   </section>
 </main>
-<div id="dead" aria-hidden="true">signal lost · the bot is starting · you can close this tab</div>
+<div id="dead" aria-hidden="true"><span id="deadtext">signal lost · the bot is starting</span><button type="button" class="closeterm" onclick="closeTerminal()">▶ close terminal</button></div>
 
 <script>
 if (location.protocol === "file:" || "__KEY__".startsWith("__")) {
@@ -724,7 +725,6 @@ async function saveAll() {
     Tool kit: <code>bots/example-bot/kits/${esc(r.kit)}</code> ${r.kit_tools ? `(${r.kit_tools} tools)` : "(new — the starter tools are added on first start)"} — ${esc(r.kit_repo)}<br>
     Speech: ${esc(r.speech)} · voice channel auto-join: ${esc(r.auto_join)}<br>
     Files written: <code>${r.files.map(esc).join("</code>, <code>")}</code>${r.backups?.length ? `<br>Previous configuration backed up: <code>${r.backups.map(esc).join("</code>, <code>")}</code>${r.kept_secrets?.length ? " · kept " + r.kept_secrets.join(" and ") : ""}` : ""}</p>`;
-  if (r.invite) { $("invite").href = r.invite; $("invite").style.display = "inline-block"; }
   powerDown(r.passphrase ? 45 : 8);                                          // a new passphrase deserves time to be written down
 }
 
@@ -742,10 +742,15 @@ function powerDown(seconds) {
 function keepScreen() { clearTimeout(offTimer); $("shutdown").textContent = "screen kept - close this tab whenever you like"; }
 function crtOff(finalText) {
   soundOff(1.2);
-  if (finalText) $("dead").textContent = finalText;
+  if (finalText) $("deadtext").textContent = finalText.replace(/\s*·\s*you can close this tab$/, "");
   document.body.classList.remove("flicker");
   const m = document.querySelector("main"); m.classList.add("crt-off");
   setTimeout(() => { document.body.classList.add("dead"); m.style.display = "none"; $("dead").style.display = "flex"; }, 1300);
+}
+function closeTerminal() {
+  // the installer opened this tab with one page in it, which browsers let a script close; if this one refuses, say so
+  window.close();
+  setTimeout(() => { if (!window.closed) $("deadtext").textContent = "this browser will not let a page close its tab · press Ctrl+W"; }, 400);
 }
 async function cancelSetup() {
   if (!confirm("Stop the setup without saving?")) return;
