@@ -192,6 +192,13 @@ tools written, rewritten or forgotten, forge jobs started and finished, shell an
 a value), settings changed, the daily review, the first day, and any key it is waiting for. Reading it is how you
 see the bot growing without following every conversation.
 
+**Pictures.** Every image posted to the bot is saved under `/data/uploads` and its path given to the model, so a brain
+without vision (DeepSeek) is not stuck: the `describe_image` starter tool sends the file to a vision model and returns
+what it sees or the answer to a question about it (read this receipt, what is on the whiteboard). It uses whichever key
+the household has, xAI Grok (`XAI_API_KEY`), OpenAI or Claude, in that order; with none, the bot posts the console link.
+A tool spec may declare `"secrets_any": [...]` for exactly this "one of these is enough" case, next to `"secrets"`
+(all required).
+
 **The web.** Every brain reaches the web the same way, through tools: the starter kit has `web_search` (DuckDuckGo,
 no key: titles, links, snippets), `web_fetch` (read a page or an API), `youtube_search` and `weather`. Claude also
 gets Anthropic's own server-side search, which finds and reads pages inside one answer with citations, billed per

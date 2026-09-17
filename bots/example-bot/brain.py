@@ -132,7 +132,8 @@ def _oa_content(content, images_ok):
             if images_ok and src.get("type") == "base64":
                 parts.append({"type": "image_url", "image_url": {"url": f"data:{src.get('media_type', 'image/png')};base64,{src['data']}"}}); text_only = False
             else:
-                parts.append({"type": "text", "text": "[an image was attached; this model cannot view images - describe what you would need, or use a tool]"})
+                parts.append({"type": "text", "text": "[an image was attached; this model cannot view images. It was saved to disk - the path is in the "
+                                                      "text just above - so call describe_image with that path and the person's question, and answer from its result]"})
         elif t == "document":
             parts.append({"type": "text", "text": "[a PDF was attached; this model cannot read it directly - a tool can, from /data/uploads]"})
     if text_only:

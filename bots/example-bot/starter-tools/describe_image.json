@@ -1,0 +1,23 @@
+{
+  "name": "describe_image",
+  "description": "Look at an image file with a vision model and return what it shows or the answer to a question about it: read a receipt or a label, transcribe a whiteboard, say what is in a photo, check whether a light is on. Use it whenever an image was attached and you cannot see images yourself (the message says where it was saved, usually /data/uploads/...), or for a second, careful look. Uses xAI Grok, OpenAI or Claude, whichever key the household has.",
+  "input_schema": {
+    "type": "object",
+    "properties": {
+      "path": {
+        "type": "string",
+        "description": "Path of the image under /data, e.g. /data/uploads/123-photo.jpg (given in the message when the image arrived)"
+      },
+      "question": {
+        "type": "string",
+        "description": "What to find out about the image; empty = a precise general description including any text in it"
+      },
+      "max_tokens": {
+        "type": "integer",
+        "description": "Length cap for the answer, default 800"
+      }
+    },
+    "required": ["path"]
+  },
+  "secrets_any": ["XAI_API_KEY", "OPENAI_API_KEY", "ANTHROPIC_API_KEY"]
+}

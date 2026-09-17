@@ -439,15 +439,16 @@ def tool_specs():
             spec = json.loads(f.read_text(encoding="utf-8"))
         except ValueError:
             continue
-        spec.pop("secrets", None)            # bot-side field, not part of the API schema
+        spec.pop("secrets", None)            # bot-side fields, not part of the API schema
+        spec.pop("secrets_any", None)
         specs.append(spec)
     return specs
 
 
-def tool_secrets(name):
-    """Secret names a generated tool declared in its spec."""
+def tool_secrets(name, key="secrets"):
+    """Secret names a tool declared in its spec: "secrets" (all required) or "secrets_any" (one of them is enough)."""
     try:
-        return [n for n in json.loads(spec_path(name).read_text(encoding="utf-8")).get("secrets", []) if isinstance(n, str)]
+        return [n for n in json.loads(spec_path(name).read_text(encoding="utf-8")).get(key, []) if isinstance(n, str)]
     except (OSError, ValueError):
         return []
 
@@ -505,11 +506,15 @@ def run_tool(name, args, selftest=False):
     costs one subprocess instead of the bot."""
     if not code_path(name).exists():
         raise ToolError(f"you have no tool named {name}")
-    declared = tool_secrets(name)
-    have = secret_env(declared)
+    declared, any_of = tool_secrets(name), tool_secrets(name, "secrets_any")
+    have = secret_env(declared + any_of)
     missing = [n for n in declared if not have.get(n)]
+    if any_of and not any(have.get(n) for n in any_of):     # "secrets_any": the tool works with whichever one of these is present
+        missing += [n for n in any_of if n not in missing]
     if missing and not selftest:                             # do not even start: the person gets the console link instead of a traceback
-        raise ToolError(key_needed(missing, f"the `{name}` tool declares it and it is not in the vault", tool=name)
+        why = (f"the `{name}` tool needs one of these and none is in the vault" if any_of and not any(have.get(n) for n in any_of)
+               else f"the `{name}` tool declares it and it is not in the vault")
+        raise ToolError(key_needed(missing, why, tool=name)
                         + "\nRelay that to the person as-is (link included) and stop; do not try other ways to get the key.")
     argv = [sys.executable, os.path.abspath(__file__), "--run-tool", name] + (["--selftest"] if selftest else [])
     try:
@@ -1463,9 +1468,18 @@ def content_from_attachments(text, author, files, msg_id="x"):
                 path.write_bytes(data)
                 line = f"[image {name} is {size / 1e6:.1f} MB, over the 5 MB the model accepts — saved to {path}; a tool could shrink it]"
                 blocks.append({"type": "text", "text": line}); memo.append(line); notes.append(f"{name}: too big to view, saved"); continue
-            blocks.append({"type": "text", "text": f"[image attached: {name}]"})
+            # always on disk too: a brain without vision (DeepSeek) hands the path to describe_image, and any tool can
+            # work on the picture later (OCR, resize, casting) instead of asking for it again
+            UPLOADS.mkdir(parents=True, exist_ok=True)
+            path = UPLOADS / f"{msg_id}-{SAFE_RE.sub('_', name)[:80]}"
+            try:
+                path.write_bytes(data)
+                where = f" (saved at {path}; a tool that takes an image path can use it, e.g. describe_image)"
+            except OSError:
+                where = ""
+            blocks.append({"type": "text", "text": f"[image attached: {name}{where}]"})
             blocks.append({"type": "image", "source": {"type": "base64", "media_type": media_type, "data": base64.b64encode(data).decode()}})
-            memo.append(f"[image: {name}]"); notes.append(f"{name}: seen"); continue
+            memo.append(f"[image: {name}{where}]"); notes.append(f"{name}: seen"); continue
         if ctype == "application/pdf" or ext == ".pdf":
             blocks.append({"type": "text", "text": f"[PDF attached: {name}]"})
             blocks.append({"type": "document", "source": {"type": "base64", "media_type": "application/pdf", "data": base64.b64encode(data).decode()}})
