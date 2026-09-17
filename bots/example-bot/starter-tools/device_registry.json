@@ -1,0 +1,42 @@
+{
+  "name": "device_registry",
+  "description": "Persistent household device registry stored in /data/device_registry/devices.json. Actions: list, add (name, ip, kind, model, room, notes), remove (by ip or name), get (by name/ip substring). Use to remember smart-home device IPs (Govee, Kasa, PS5, etc.) across restarts so scans aren't needed.",
+  "input_schema": {
+    "type": "object",
+    "properties": {
+      "action": {
+        "type": "string",
+        "enum": [
+          "list",
+          "add",
+          "remove",
+          "get"
+        ]
+      },
+      "ip": {
+        "type": "string"
+      },
+      "name": {
+        "type": "string"
+      },
+      "kind": {
+        "type": "string"
+      },
+      "model": {
+        "type": "string"
+      },
+      "room": {
+        "type": "string"
+      },
+      "notes": {
+        "type": "string"
+      },
+      "query": {
+        "type": "string"
+      }
+    },
+    "required": [
+      "action"
+    ]
+  }
+}

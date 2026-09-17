@@ -1,0 +1,46 @@
+{
+  "name": "rag_memory",
+  "description": "Persistent RAG knowledge base at /data/rag_memory/rag.db (sqlite FTS5, BM25 ranked). Actions: 'add' (text, optional title/source/tags/doc_id - long text is auto-chunked), 'search' (query, limit, optional tags filter -> ranked chunks with snippets), 'get' (doc_id -> full document), 'list' (recent docs), 'delete' (doc_id), 'stats', 'ingest_url' (url -> fetches page text and stores it). Use to remember facts/notes/docs across sessions and to look things up before answering.",
+  "input_schema": {
+    "type": "object",
+    "properties": {
+      "action": {
+        "enum": [
+          "add",
+          "search",
+          "get",
+          "list",
+          "delete",
+          "stats",
+          "ingest_url"
+        ],
+        "description": "default search"
+      },
+      "text": {
+        "type": "string"
+      },
+      "title": {
+        "type": "string"
+      },
+      "source": {
+        "type": "string"
+      },
+      "tags": {
+        "type": "string",
+        "description": "comma-separated"
+      },
+      "doc_id": {
+        "type": "integer"
+      },
+      "query": {
+        "type": "string"
+      },
+      "url": {
+        "type": "string"
+      },
+      "limit": {
+        "type": "integer"
+      }
+    }
+  }
+}

@@ -1,0 +1,19 @@
+{
+  "name": "youtube_search",
+  "description": "Search YouTube without an API key by fetching https://www.youtube.com/results and parsing ytInitialData. Returns list of videos: title, videoId, url, channel, duration, views, published. Args: query, limit (default 8). Use for \"find me a video of X\", then pass videoId to lg_tv_youtube.",
+  "input_schema": {
+    "type": "object",
+    "properties": {
+      "query": {
+        "type": "string"
+      },
+      "limit": {
+        "type": "integer",
+        "description": "max results, default 8"
+      }
+    },
+    "required": [
+      "query"
+    ]
+  }
+}

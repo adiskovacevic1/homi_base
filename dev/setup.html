@@ -1,0 +1,217 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>bot-lab setup</title>
+<style>
+  :root { --bg:#0f1115; --card:#171a21; --line:#2a2f3a; --text:#e6e8ee; --muted:#9aa3b2; --ok:#3ecf8e; --bad:#ff6b6b; --warn:#f5b642; --accent:#6ea8fe; }
+  @media (prefers-color-scheme: light) { :root { --bg:#f5f6f8; --card:#fff; --line:#dde1e8; --text:#1b1f27; --muted:#5c6575; } }
+  * { box-sizing: border-box; }
+  body { margin:0; background:var(--bg); color:var(--text); font:15px/1.5 system-ui, -apple-system, Segoe UI, Roboto, sans-serif; }
+  main { max-width: 760px; margin: 0 auto; padding: 32px 16px 64px; }
+  h1 { font-size: 26px; margin: 0 0 4px; } h1 small { color: var(--muted); font-weight: 400; font-size: 15px; margin-left: 8px; }
+  p.lead { color: var(--muted); margin: 0 0 24px; }
+  section { background: var(--card); border: 1px solid var(--line); border-radius: 12px; padding: 20px; margin-bottom: 16px; }
+  h2 { font-size: 17px; margin: 0 0 4px; } .help { color: var(--muted); font-size: 13.5px; margin: 0 0 14px; } .help a { color: var(--accent); }
+  label { display:block; font-weight: 600; margin: 14px 0 6px; font-size: 14px; }
+  .row { display:flex; gap:8px; align-items:center; }
+  input, select { width:100%; padding: 10px 12px; border-radius: 8px; border: 1px solid var(--line); background: var(--bg); color: var(--text); font: inherit; }
+  input:focus, select:focus { outline: 2px solid var(--accent); outline-offset: 1px; }
+  button { padding: 10px 14px; border-radius: 8px; border: 1px solid var(--line); background: var(--card); color: var(--text); font: inherit; cursor: pointer; white-space: nowrap; }
+  button.primary { background: var(--accent); border-color: var(--accent); color: #0b1220; font-weight: 700; padding: 12px 20px; font-size: 16px; }
+  button:disabled { opacity: .5; cursor: default; }
+  .status { font-size: 13.5px; margin-top: 6px; min-height: 1.4em; } .ok { color: var(--ok); } .bad { color: var(--bad); } .warn { color: var(--warn); } .muted { color: var(--muted); }
+  .identity { display:flex; align-items:center; gap:10px; margin-top: 8px; } .identity img { width: 40px; height: 40px; border-radius: 50%; background: var(--line); }
+  ol { padding-left: 20px; margin: 6px 0; color: var(--muted); font-size: 13.5px; } ol li { margin: 2px 0; }
+  .voices { display:flex; gap:8px; } .voices select { flex:1; }
+  #result { display:none; } #result.show { display:block; } #form.hide { display:none; }
+  .big { font-size: 17px; } .invite { display:inline-block; margin: 12px 0; padding: 12px 18px; background: var(--accent); color:#0b1220; border-radius: 8px; font-weight: 700; text-decoration: none; }
+  .problems { color: var(--bad); white-space: pre-line; margin-top: 10px; }
+  .kit-existing { margin-top: 8px; } .kit-existing label { display:flex; gap:8px; align-items:center; font-weight: 500; margin: 6px 0; } .kit-existing input { width:auto; }
+  code { background: var(--bg); padding: 1px 6px; border-radius: 5px; font-size: 13px; }
+</style>
+</head>
+<body>
+<main>
+  <h1>bot-lab setup <small>a Discord bot that builds its own tools</small></h1>
+  <p class="lead">Everything you enter stays on this PC, in two small config files. Keys are only used to check they work.</p>
+
+  <form id="form" onsubmit="return false">
+  <section>
+    <h2>1. The Discord bot</h2>
+    <p class="help">You need a bot of your own from the <a href="https://discord.com/developers/applications" target="_blank" rel="noopener">Discord developer portal</a>:</p>
+    <ol>
+      <li><b>New Application</b> → name it what people will see.</li>
+      <li><b>Bot</b> tab → <b>Reset Token</b> → copy the token (it is shown once).</li>
+      <li><b>Bot</b> tab → <b>Privileged Gateway Intents</b> → turn on <b>Message Content Intent</b>. Without it the bot hears nothing.</li>
+    </ol>
+    <label for="token">Bot token</label>
+    <div class="row"><input id="token" type="password" autocomplete="off" spellcheck="false" placeholder="paste the token"><button type="button" onclick="reveal('token')">show</button></div>
+    <div class="status" id="s-token"></div>
+    <div class="identity" id="identity" style="display:none"><img id="avatar" alt=""><div><b id="botname"></b><div class="muted" id="intent"></div></div></div>
+  </section>
+
+  <section>
+    <h2>2. Who owns it</h2>
+    <p class="help">Only these people can give the bot new tools, a shell and installs. Everyone else can talk to it and use what exists.
+      Your ID: Discord <b>Settings → Advanced → Developer Mode</b>, then right-click your name → <b>Copy User ID</b>.</p>
+    <label for="owners">Your Discord user ID (more than one: comma-separated)</label>
+    <input id="owners" inputmode="numeric" placeholder="123456789012345678">
+    <div class="status" id="s-owners"></div>
+    <label for="name">What the bot calls itself</label>
+    <input id="name" placeholder="the house bot">
+  </section>
+
+  <section>
+    <h2>3. The model</h2>
+    <p class="help">An API key from <a href="https://console.anthropic.com" target="_blank" rel="noopener">console.anthropic.com</a>. The bot, and the tool builder, run on it.</p>
+    <label for="anthropic">Anthropic API key</label>
+    <div class="row"><input id="anthropic" type="password" autocomplete="off" spellcheck="false" placeholder="sk-ant-..."><button type="button" onclick="reveal('anthropic')">show</button></div>
+    <div class="status" id="s-anthropic"></div>
+  </section>
+
+  <section>
+    <h2>4. Voice <span class="muted" style="font-weight:400">(optional)</span></h2>
+    <p class="help">With an <a href="https://elevenlabs.io" target="_blank" rel="noopener">ElevenLabs</a> key the bot hears and speaks through their service. Without one it uses local speech engines, which work fine and cost nothing.</p>
+    <label for="eleven">ElevenLabs API key</label>
+    <div class="row"><input id="eleven" type="password" autocomplete="off" spellcheck="false" placeholder="leave empty to stay local"><button type="button" onclick="reveal('eleven')">show</button></div>
+    <div class="status" id="s-eleven"></div>
+    <div id="voicebox" style="display:none">
+      <label for="voice">Voice</label>
+      <div class="voices"><select id="voice"></select><button type="button" id="play" onclick="preview()">▶ preview</button></div>
+    </div>
+    <label for="auto">Voice channel it joins by itself when someone arrives</label>
+    <input id="auto" value="general" placeholder="channel name or ID; empty = only on !join">
+    <p class="help" style="margin-top:6px">It leaves when the channel empties or when someone says bye.</p>
+  </section>
+
+  <section>
+    <h2>5. Tool kit</h2>
+    <p class="help">The bot's tools live in a folder named after this household, so several households can share this repo. A new kit starts with eight basic tools and grows.</p>
+    <label for="kit">Kit name</label>
+    <input id="kit" placeholder="lowercase letters, digits, dashes">
+    <div class="status" id="s-kit"></div>
+    <div class="kit-existing" id="kit-existing" style="display:none">
+      <label><input type="checkbox" id="keep_kit"> Yes, that is this household's kit — keep using it</label>
+    </div>
+    <label for="kit_remote">Back the kit up to a git repo <span class="muted" style="font-weight:400">(optional)</span></label>
+    <input id="kit_remote" placeholder="https://github.com/you/my-bot-kit.git — a private repo of your own">
+    <p class="help" style="margin-top:6px">The kit becomes a small git repo either way, so every tool the bot builds is a commit. With a URL here it also has somewhere to push; run <code>git push -u origin main</code> in the kit folder when you want it backed up.</p>
+  </section>
+
+  <div class="row" style="justify-content:space-between">
+    <!-- named saveAll/cancelSetup, not submit/cancel: inside a <form>, inline handlers see the form's own methods first -->
+    <button type="button" onclick="cancelSetup()">Cancel</button>
+    <button type="button" class="primary" id="submit" onclick="saveAll()">Save and start the bot</button>
+  </div>
+  <div class="problems" id="problems"></div>
+  </form>
+
+  <section id="result">
+    <h2 class="big">Saved. You can close this tab; the installer is starting the containers.</h2>
+    <div id="summary"></div>
+    <a id="invite" class="invite" target="_blank" rel="noopener" style="display:none">Invite the bot to your server →</a>
+    <p class="help">Then @mention the bot in a channel. It answers with what it has, and when a question needs something new it has a tool built and follows up.</p>
+  </section>
+</main>
+
+<script>
+const KEY = "__KEY__";
+const $ = (id) => document.getElementById(id);
+const api = (path, body) => fetch(path, { method: body ? "POST" : "GET", headers: { "content-type": "application/json", "X-Setup-Key": KEY }, body: body ? JSON.stringify(body) : undefined }).then(r => r.json());
+const status = (id, cls, text) => { const el = $("s-" + id); el.className = "status " + cls; el.textContent = text; };
+const debounce = (fn, ms) => { let t; return (...a) => { clearTimeout(t); t = setTimeout(() => fn(...a), ms); }; };
+let state = { kits: {}, discord: null, voices: [] };
+function reveal(id) { const i = $(id); i.type = i.type === "password" ? "text" : "password"; }
+
+async function init() {
+  state = { ...state, ...(await api("/api/state")) };
+  $("name").addEventListener("input", () => { if (!$("kit").dataset.touched) { $("kit").value = kitDefault($("name").value); checkKit(); } });
+  $("kit").addEventListener("input", () => { $("kit").dataset.touched = "1"; checkKit(); });
+  $("token").addEventListener("input", debounce(checkDiscord, 500));
+  $("anthropic").addEventListener("input", debounce(checkAnthropic, 500));
+  $("eleven").addEventListener("input", debounce(checkEleven, 500));
+  $("owners").addEventListener("input", debounce(checkOwners, 600));
+  $("kit").value = kitDefault(""); checkKit();
+  if (state.config_exists) $("problems").textContent = "There is already a configuration on this PC. Saving will replace it (the tool kit is kept).";
+}
+const kitDefault = (name) => (name || "home").toLowerCase().replace(/[^a-z0-9-]+/g, "-").replace(/^-+|-+$/g, "") || "home";
+
+async function checkDiscord() {
+  const token = $("token").value.trim(); state.discord = null; $("identity").style.display = "none";
+  if (!token) return status("token", "muted", "");
+  if (token.length < 50 || token.split(".").length !== 3) return status("token", "bad", "That does not look like a bot token: about 70 characters with two dots. If Ctrl+V did nothing, try right-click → Paste.");
+  status("token", "muted", "checking with Discord…");
+  const r = await api("/api/check/discord", { token });
+  if (!r.ok) return status("token", r.offline ? "warn" : "bad", r.error || "rejected");
+  state.discord = r;
+  status("token", "ok", "Token works.");
+  $("identity").style.display = "flex"; $("avatar").src = r.avatar || "data:image/gif;base64,R0lGODlhAQABAAAAACw="; $("botname").textContent = r.name;
+  $("intent").className = r.message_content ? "ok" : "bad";
+  $("intent").textContent = r.message_content ? "Message Content Intent is on." : "Message Content Intent is OFF — turn it on in the Bot tab or the bot will not hear messages.";
+  if ($("owners").value.trim()) checkOwners();
+}
+async function checkOwners() {
+  const ids = $("owners").value.split(",").map(s => s.trim()).filter(Boolean);
+  if (!ids.length) return status("owners", "muted", "");
+  if (!ids.every(i => /^\d{15,22}$/.test(i))) return status("owners", "bad", "User IDs are 17–20 digit numbers.");
+  if (!state.discord) return status("owners", "muted", ids.length + " ID(s). Enter a working token above and I will look the names up.");
+  const r = await api("/api/check/owners", { token: $("token").value.trim(), ids });
+  if (!Array.isArray(r)) return status("owners", "warn", "could not look them up");
+  const bad = r.filter(x => !x.ok);
+  status("owners", bad.length ? "bad" : "ok", r.map(x => x.ok ? x.name : `${x.id}: not found`).join(", "));
+}
+async function checkAnthropic() {
+  const key = $("anthropic").value.trim();
+  if (!key) return status("anthropic", "muted", "");
+  if (!key.startsWith("sk-ant-")) return status("anthropic", "bad", "Anthropic keys start with sk-ant-");
+  status("anthropic", "muted", "checking…");
+  const r = await api("/api/check/anthropic", { key });
+  status("anthropic", r.ok ? "ok" : (r.offline ? "warn" : "bad"), r.ok ? "Key works." : r.error);
+}
+async function checkEleven() {
+  const key = $("eleven").value.trim(); $("voicebox").style.display = "none";
+  if (!key) return status("eleven", "muted", "");
+  status("eleven", "muted", "checking…");
+  const r = await api("/api/check/eleven", { key });
+  if (!r.ok) return status("eleven", r.offline ? "warn" : "bad", r.error);
+  state.voices = r.voices || [];
+  status("eleven", "ok", `Key works. ${state.voices.length} voices on the account.`);
+  const sel = $("voice"); sel.innerHTML = "";
+  for (const v of state.voices) { const o = document.createElement("option"); o.value = v.id; o.textContent = `${v.name}${v.labels ? " — " + v.labels : ""}`; sel.appendChild(o); }
+  if (!state.voices.length) { const o = document.createElement("option"); o.value = ""; o.textContent = "default voice"; sel.appendChild(o); }
+  $("voicebox").style.display = "block";
+}
+let audio;
+function preview() { const v = state.voices.find(x => x.id === $("voice").value); if (!v || !v.preview) return; if (audio) audio.pause(); audio = new Audio(v.preview); audio.play(); }
+function checkKit() {
+  const kit = $("kit").value.trim(); const n = state.kits[kit] || 0;
+  $("kit-existing").style.display = n ? "block" : "none"; $("keep_kit").checked = false;
+  if (!kit) return status("kit", "muted", "");
+  if (!/^[a-z][a-z0-9-]{1,40}$/.test(kit)) return status("kit", "bad", "Lowercase letters, digits and dashes, starting with a letter.");
+  if (n) return status("kit", "warn", `kits/${kit} already exists with ${n} tools. If it belongs to another household, pick a different name.`);
+  const others = Object.keys(state.kits).filter(k => k !== kit);
+  status("kit", "ok", `New kit: starts with the basic tools.${others.length ? " Other kits here: " + others.join(", ") : ""}`);
+}
+async function saveAll() {
+  $("problems").textContent = ""; $("submit").disabled = true; $("submit").textContent = "Saving…";
+  const body = { token: $("token").value.trim(), anthropic: $("anthropic").value.trim(), owners: $("owners").value.trim(), name: $("name").value.trim(),
+                 eleven: $("eleven").value.trim(), voice: $("eleven").value.trim() ? $("voice").value : "", auto: $("auto").value.trim(), kit: $("kit").value.trim(),
+                 kit_remote: $("kit_remote").value.trim(), app_id: state.discord?.app_id || "", keep_kit: $("keep_kit").checked };
+  const r = await api("/api/write", body);
+  $("submit").disabled = false; $("submit").textContent = "Save and start the bot";
+  if (!r.ok) { $("problems").textContent = (r.problems || [r.error || "something went wrong"]).join("\n"); return; }
+  $("form").classList.add("hide"); $("result").classList.add("show");
+  $("summary").innerHTML = `<p>Bot: <b>${esc(state.discord?.name || r.name)}</b> · owner(s): <code>${esc(r.owners)}</code><br>
+    Tool kit: <code>bots/example-bot/kits/${esc(r.kit)}</code> ${r.kit_tools ? `(${r.kit_tools} tools)` : "(new — the eight starter tools are added on first start)"} — ${esc(r.kit_repo)}<br>
+    Speech: ${esc(r.speech)} · voice channel auto-join: ${esc(r.auto_join)}<br>
+    Files written: <code>${r.files.map(esc).join("</code>, <code>")}</code></p>`;
+  if (r.invite) { $("invite").href = r.invite; $("invite").style.display = "inline-block"; }
+}
+async function cancelSetup() { if (!confirm("Stop the setup without saving?")) return; await api("/api/cancel", {}); document.body.innerHTML = "<main><h1>Setup cancelled.</h1><p class='lead'>Nothing was written. Run the installer again when you are ready.</p></main>"; }
+const esc = (s) => String(s ?? "").replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+init();
+</script>
+</body>
+</html>

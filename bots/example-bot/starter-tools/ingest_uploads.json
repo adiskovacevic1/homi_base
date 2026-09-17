@@ -1,0 +1,29 @@
+{
+  "name": "ingest_uploads",
+  "description": "Auto-index files dropped in Discord into the RAG database. Scans /data/uploads (or a given path/file), extracts text from .txt/.md/.json/code/.csv/.log and .pdf (via pypdf if available), and adds each to /data/rag_memory/rag.db with title=filename, source=path, tags. Keeps a ledger at /data/ingest_uploads/seen.json so the same file isn't indexed twice (action='scan' only does new ones; force=true re-indexes). Actions: scan, status, forget(path).",
+  "input_schema": {
+    "type": "object",
+    "properties": {
+      "action": {
+        "enum": [
+          "scan",
+          "status",
+          "forget"
+        ],
+        "description": "default scan"
+      },
+      "path": {
+        "type": "string",
+        "description": "file or dir, default /data/uploads"
+      },
+      "tags": {
+        "type": "string",
+        "description": "extra comma-separated tags"
+      },
+      "force": {
+        "type": "boolean",
+        "description": "re-index already-seen files"
+      }
+    }
+  }
+}

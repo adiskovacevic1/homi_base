@@ -1,0 +1,28 @@
+{
+  "name": "context_memory",
+  "description": "Persistent context/memory file at /data/context/context.md. Actions: 'read' (return whole file - DO THIS at the start of a session or whenever household/user context matters), 'append' (add a timestamped bullet, optional section header), 'write' (overwrite entire file with text). Holds recaps of recent chats, user preferences, device facts, ongoing projects.",
+  "input_schema": {
+    "type": "object",
+    "properties": {
+      "action": {
+        "enum": [
+          "read",
+          "append",
+          "write"
+        ],
+        "description": "default read"
+      },
+      "text": {
+        "type": "string",
+        "description": "content for append/write"
+      },
+      "section": {
+        "type": "string",
+        "description": "optional ## header to add before an appended bullet"
+      },
+      "max_chars": {
+        "type": "integer"
+      }
+    }
+  }
+}

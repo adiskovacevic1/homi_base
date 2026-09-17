@@ -1,0 +1,21 @@
+{
+  "name": "list_files",
+  "description": "List files and directories under a path (default /data, my persistent scratch dir), recursively up to a depth, with sizes and modification times. Use to inspect what data my tools have stored.",
+  "input_schema": {
+    "type": "object",
+    "properties": {
+      "path": {
+        "type": "string",
+        "description": "Directory to list, default /data"
+      },
+      "depth": {
+        "type": "integer",
+        "description": "Recursion depth, default 3"
+      },
+      "max_entries": {
+        "type": "integer",
+        "description": "Cap on entries returned, default 500"
+      }
+    }
+  }
+}

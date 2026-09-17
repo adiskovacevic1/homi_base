@@ -1,0 +1,58 @@
+# bot-lab: a dev box to build bots in, and one container per bot.
+#   docker compose up -d dev            start the dev box
+#   docker compose exec dev bash        shell into it (your code is under /bots)
+#   docker compose up -d --build example-bot   build + run a bot
+#   docker compose logs -f example-bot  watch it
+# No fixed project name or container names: the compose project is named after the folder, so two installs
+# (or a test copy) can run side by side on one PC. Services still reach each other by service name.
+
+services:
+  dev:
+    build: ./dev
+    hostname: bot-dev
+    volumes:
+      - ./bots:/bots                    # your bot source, shared with Windows
+      - dev-home:/root                  # keeps Claude Code login, shell history, pip cache, forge work dirs
+      - .:/lab                          # the whole repo, so the forge can commit the tools it builds
+    environment:
+      - TZ=${TZ:-UTC}                 # set TZ= in the root .env for local time in logs
+    working_dir: /bots
+    restart: unless-stopped
+    networks:
+      botnet:
+        aliases: [bot-dev]            # so FORGE_URL=http://bot-dev:8791 resolves whatever the container is called
+
+  example-bot:
+    build: ./bots/example-bot
+    env_file:
+      - path: ./bots/example-bot/.env  # secrets live here, git-ignored; written by install.sh / setup.py
+        required: false                 # so `docker compose build` works before setup has run
+    volumes:
+      - ./bots/example-bot/data:/data   # runtime state: vault, uploads, pip libs, per-tool files (git-ignored)
+      - ./bots/example-bot/kits/${KIT:-default}:/data/tools   # this household's tool kit, tracked in git; KIT comes from ./.env (setup.py writes it)
+    restart: unless-stopped
+    networks: [botnet]
+    deploy:
+      resources:
+        limits:
+          memory: 2g                    # it installs packages and runs shell commands of its own
+
+  voice-bot:
+    build: ./bots/voice-bot
+    env_file:
+      - path: ./bots/voice-bot/.env
+        required: false
+    volumes:
+      - ./bots/voice-bot/data:/data        # temp audio, nothing precious
+    restart: unless-stopped
+    networks: [botnet]
+    deploy:
+      resources:
+        limits:
+          memory: 3g                      # whisper base.en ~1 GB resident; headroom for ffmpeg/piper
+
+volumes:
+  dev-home:
+
+networks:
+  botnet:

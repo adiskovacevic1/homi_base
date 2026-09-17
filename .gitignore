@@ -1,0 +1,10 @@
+# secrets and per-machine config (the root .env holds KIT=<household>, written by setup)
+.env
+*.env
+!*.env.example
+# runtime data: vault, uploads, pip libs, per-tool state
+bots/*/data/
+# tool kits: each household's kit is its own folder (and, if backed up, its own git repo) - never part of this repo
+bots/*/kits/
+__pycache__/
+*.pyc

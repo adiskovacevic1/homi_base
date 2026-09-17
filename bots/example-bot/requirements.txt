@@ -1,0 +1,5 @@
+anthropic>=0.60
+discord.py>=2.4
+httpx>=0.27
+pillow>=10
+cryptography>=42

@@ -1,0 +1,31 @@
+{
+  "name": "weather",
+  "description": "Current weather and a short daily forecast for any place in the world, from the free Open-Meteo API (no key needed). Use it whenever someone asks what the weather is like, whether it will rain, how hot/cold it is, or for a forecast for the next few days. Give 'place' as a city, optionally with state or country to disambiguate ('Chicago', 'Chicago, IL', 'Portland, Oregon', 'Paris, FR'). Returns a dict: place (resolved name), location (lat/lon), timezone, units, observed_at (local time of the reading), current {temp, feels_like, humidity (%), wind, wind_gust, wind_dir (compass), precip, condition (words), is_day}, daily (a list, one entry per day starting today: date, day, condition, high, low, precip_chance in %, precip total, wind_max, sunrise, sunset as local HH:MM), and summary (a one-line sentence you can relay as-is). Units default to imperial: Fahrenheit, mph, inches; units='metric' gives Celsius, km/h, mm. days is 1-7, default 3. If the state/country hint cannot be matched the closest city is used and a 'note' field explains that. Raises an error for an unknown place or out-of-range days.",
+  "input_schema": {
+    "type": "object",
+    "properties": {
+      "place": {
+        "type": "string",
+        "description": "City name, optionally 'City, State' or 'City, Country' to disambiguate, e.g. 'Chicago', 'Springfield, IL', 'Paris, FR'"
+      },
+      "days": {
+        "type": "integer",
+        "description": "Number of forecast days including today, 1-7 (default 3)",
+        "minimum": 1,
+        "maximum": 7
+      },
+      "units": {
+        "type": "string",
+        "enum": [
+          "imperial",
+          "metric"
+        ],
+        "description": "imperial = \u00b0F/mph/inches (default); metric = \u00b0C/km-h/mm"
+      }
+    },
+    "required": [
+      "place"
+    ]
+  },
+  "secrets": []
+}

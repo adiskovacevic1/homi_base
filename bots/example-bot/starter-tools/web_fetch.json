@@ -1,0 +1,28 @@
+{
+  "name": "web_fetch",
+  "description": "Fetch a URL over HTTP(S) and return its content. Strips HTML to readable text by default (mode='text'), or returns raw body (mode='raw'). Follows redirects. Use for reading web pages, APIs, JSON endpoints.",
+  "input_schema": {
+    "type": "object",
+    "properties": {
+      "url": {
+        "type": "string",
+        "description": "Full URL, http(s)"
+      },
+      "mode": {
+        "type": "string",
+        "enum": [
+          "text",
+          "raw"
+        ],
+        "description": "text = HTML stripped to plain text (default); raw = body as-is"
+      },
+      "max_chars": {
+        "type": "integer",
+        "description": "Truncate output, default 20000"
+      }
+    },
+    "required": [
+      "url"
+    ]
+  }
+}
