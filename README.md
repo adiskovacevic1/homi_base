@@ -199,6 +199,10 @@ offline fallback stays on Claude. `bots/example-bot/brain.py` is the one place t
 in channels, in DMs and in voice. A non-owner who addresses it hears once an hour that it is set up for its owner, and
 chatter from them in `#bot` is ignored. `TALK_TO=anyone` makes it a shared family bot. Within that, `DM_POLICY`
 (`owners`, `anyone`, `off`) narrows direct messages, since anyone sharing a server can open a DM with a bot.
+An owner can add or remove owners from chat ("make @Sam an owner"; the `settings` tool takes the mention), which
+applies to the next message, is logged in `#activity`, and never removes the last owner. Once that has happened the
+live list in `data/settings.json` is the owner list and `TOOL_CREATORS` in `.env` is only the seed; the console shows
+both.
 
 **The activity log.** The bot keeps a running log of what it does on its own in `#activity` (setting
 `ACTIVITY_CHANNEL`, created when first needed, empty turns it off): coming online, every kit tool it used and for whom,

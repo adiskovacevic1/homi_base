@@ -359,11 +359,15 @@ META_TOOLS.append({
                    "daily post proposing new tools), ideas_at (HH:MM local), ideas_channel (name or id; empty = the day's busiest channel), "
                    "brain_provider (claude, openai or deepseek - which model answers, applies to the next message; if its key is missing "
                    "you get a console link to relay and Claude keeps answering meanwhile), brain_model (a model id for that provider); "
-                   "'run_ideas' posts the daily ideas now; 'run_welcome' redoes the first-day network look and introduction. Use when an owner asks to switch the model, turn the daily ideas on or off, or introduce yourself again.",
+                   "'run_ideas' posts the daily ideas now; 'run_welcome' redoes the first-day network look and introduction; "
+                   "'add_owner' / 'remove_owner' with value = the person's Discord user id (a mention in the message looks like <@123456789> - "
+                   "that number) change who counts as an owner: owners are the only people you answer, and the only ones who may give you tools. "
+                   "Applies at once; you cannot remove the last owner. Use when an owner asks to switch the model, turn the daily ideas on or off, "
+                   "introduce yourself again, or make someone an owner.",
     "input_schema": {"type": "object", "properties": {
-        "action": {"type": "string", "enum": ["get", "set", "run_ideas", "run_welcome"]},
+        "action": {"type": "string", "enum": ["get", "set", "run_ideas", "run_welcome", "add_owner", "remove_owner"]},
         "key": {"type": "string", "enum": ["daily_ideas", "ideas_at", "ideas_channel", "brain_provider", "brain_model"]},
-        "value": {"type": "string"}},
+        "value": {"type": "string", "description": "for set: the new value; for add_owner/remove_owner: the user id or <@id> mention"}},
         "required": ["action"]},
 })
 META_NAMES = {t["name"] for t in META_TOOLS}
@@ -813,9 +817,33 @@ def ideas_settings():
 
 def settings_tool(action="get", key=None, value=None, ctx=None):
     """Meta-tool, owner-only: the bot's own switches. get / set <key> <value> / run_ideas."""
+    if action in ("add_owner", "remove_owner"):
+        m = re.search(r"\d{15,22}", str(value or ""))
+        if not m:
+            raise ToolError("value must be a Discord user id (17-19 digits) or a <@id> mention of the person")
+        uid, s = m.group(0), settings_load()
+        current = set(owners())
+        if action == "add_owner":
+            if uid in current:
+                return {"ok": True, "owners": sorted(current), "note": f"<@{uid}> was already an owner"}
+            current.add(uid)
+            verb = "added"
+        else:
+            if uid not in current:
+                return {"ok": True, "owners": sorted(current), "note": f"<@{uid}> was not an owner"}
+            if len(current) == 1:
+                raise ToolError("that is the last owner; add another owner first, then remove this one")
+            current.discard(uid)
+            verb = "removed"
+        s["owners"] = sorted(current)
+        settings_save(s)
+        who = (ctx or {}).get("who") or "an owner"
+        activity(f"👑 **owner {verb}** <@{uid}> · by {who} · owners now: {', '.join('<@' + o + '>' for o in sorted(current))}", (ctx or {}).get("guild_id"))
+        return {"ok": True, "owners": sorted(current), "note": f"{verb} <@{uid}>; applies to their next message. Owners are the only people I answer "
+                                                                 f"and the only ones who may give me tools. The voice bot follows within five minutes."}
     if action == "get":
         provider, model = brain_settings()
-        return {**ideas_settings(), "brain_provider": provider, "brain_model": model,
+        return {**ideas_settings(), "brain_provider": provider, "brain_model": model, "owners": sorted(owners()),
                 "brains": {p: {"label": d["label"], "default_model": d["model"], "key": d["key"],
                                "key_present": bool(secret_env([d["key"]]).get(d["key"]))} for p, d in brain.PROVIDERS.items()},
                 "note": "daily_ideas true/false; ideas_at HH:MM local; ideas_channel name or id (empty = busiest); run_ideas posts now; "
@@ -831,7 +859,7 @@ def settings_tool(action="get", key=None, value=None, ctx=None):
         ctx["welcome_now"]()
         return "looking at the network again and posting a fresh introduction in a minute or so"
     if action != "set":
-        raise ToolError("action must be get, set or run_ideas")
+        raise ToolError("action must be get, set, run_ideas, run_welcome, add_owner or remove_owner")
     s = settings_load()
     v = str(value if value is not None else "").strip()
     if key == "daily_ideas":
@@ -1533,9 +1561,19 @@ async def typing_indicator(channel):
                 pass
 
 
+def owners():
+    """The current owners: the live settings file when an owner has changed the list from chat, else TOOL_CREATORS from
+    the env. Read on every check, so a change applies to the next message."""
+    live = settings_load().get("owners")
+    if isinstance(live, list):
+        return {str(o) for o in live if str(o).isdigit()}
+    return set(TOOL_CREATORS)
+
+
 def is_owner(user_id):
-    """An owner is someone in TOOL_CREATORS; an empty list means everyone, as it does for tools (setup never leaves it empty)."""
-    return not TOOL_CREATORS or str(user_id) in TOOL_CREATORS
+    """An owner is someone in owners(); an empty list means everyone, as it does for tools (setup never leaves it empty)."""
+    o = owners()
+    return not o or str(user_id) in o
 
 
 def may_talk(user_id):
@@ -1559,7 +1597,7 @@ def owner_only_line(bot, user_id):
     if now - _told_off.get(user_id, 0) < 3600:
         return None
     _told_off[user_id] = now
-    owner = next((f"<@{o}>" for o in sorted(TOOL_CREATORS)), "my owner")
+    owner = next((f"<@{o}>" for o in sorted(owners())), "my owner")
     return f"I'm set up for {owner} only and don't answer anyone else, sorry."
 
 
@@ -1687,7 +1725,7 @@ def run_discord(token):
                 return web.json_response({"reply": "Sorry, I'm set up for my owner only.", "notes": [], "owner_only": True})
             hist = histories["brain:" + str(body.get("key") or "default")]
             hist.append({"role": "user", "content": f"{speaker}: {text}"})
-            trusted = not TOOL_CREATORS or str(body.get("speaker_id") or "") in TOOL_CREATORS
+            trusted = is_owner(str(body.get("speaker_id") or ""))
             extra = VOICE_EXTRA if body.get("mode") == "voice" else ""
             loop = asyncio.get_running_loop()
             ctx = {"who": speaker, "trusted": trusted, "question": text, "hist": hist, "loop": loop, "files": [],
@@ -1747,7 +1785,7 @@ def run_discord(token):
             """Who the bot talks to, for the voice bot's own commands and auto-join: it enforces the same TALK_TO."""
             if req.headers.get("X-Internal-Token") != token:
                 return web.json_response({"error": "unauthorized"}, status=401)
-            return web.json_response({"talk_to": TALK_TO, "owners": sorted(TOOL_CREATORS)})
+            return web.json_response({"talk_to": TALK_TO, "owners": sorted(owners())})
 
         app.router.add_post("/ask", handle_ask)
         app.router.add_post("/activity", handle_activity)
@@ -1821,7 +1859,7 @@ def run_discord(token):
         entry = {"role": "user", "content": blocks}
         hist.append(entry)
         notes = []
-        trusted = not TOOL_CREATORS or str(msg.author.id) in TOOL_CREATORS
+        trusted = is_owner(msg.author.id)
 
         async def send_reply(reply, files=None):
             """A forge follow-up, minutes later: reply to the original message and ping the person, who may have moved on."""
