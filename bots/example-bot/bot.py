@@ -347,7 +347,11 @@ if FORGE_ON:
                         "description": "environment-variable names it will need (existing vault names or new ones)"},
             "example_call": {"type": "object", "description": "the arguments you want to call it with right now; the agent tests with these"},
             "mode": {"type": "string", "enum": ["build", "repair"], "description": "repair = fix the existing tool of this name; its current code and the error go to the agent"},
-            "error": {"type": "string", "description": "repair: the failure you saw (error text or traceback), and what call produced it"}},
+            "error": {"type": "string", "description": "repair: the failure you saw (error text or traceback), and what call produced it"},
+            "minutes": {"type": "number", "description": "how long the agent may work on this one, when the default is not right: a small "
+                                                          "self-contained tool needs 3-5, something with a device protocol, auth or a lot of "
+                                                          "trial and error 10-20. The owner sets the default and a ceiling; asking for more "
+                                                          "than the ceiling silently gets the ceiling."}},
             "required": ["name", "brief"]},
     })
 META_TOOLS.append({
@@ -364,7 +368,9 @@ META_TOOLS.append({
     "description": "Owner-only switches for the bot itself. action 'get' shows them; 'set' changes one: daily_ideas (true/false - the "
                    "daily post proposing new tools), ideas_at (HH:MM local), ideas_channel (name or id; empty = the day's busiest channel), "
                    "brain_provider (claude, openai or deepseek - which model answers, applies to the next message; if its key is missing "
-                   "you get a console link to relay and Claude keeps answering meanwhile), brain_model (a model id for that provider); "
+                   "you get a console link to relay and Claude keeps answering meanwhile), brain_model (a model id for that provider), "
+                   "forge_minutes (how long the forge may work on one tool by default, 1-30; 0 restores the installed default - "
+                   "request_tool can still ask for more or less per build); "
                    "'run_ideas' posts the daily ideas now; 'run_welcome' redoes the first-day network look and introduction; "
                    "'add_owner' / 'remove_owner' with value = the person's Discord user id (a mention in the message looks like <@123456789> - "
                    "that number) change who counts as an owner: owners are the only people you answer, and the only ones who may give you tools. "
@@ -372,7 +378,7 @@ META_TOOLS.append({
                    "introduce yourself again, or make someone an owner.",
     "input_schema": {"type": "object", "properties": {
         "action": {"type": "string", "enum": ["get", "set", "run_ideas", "run_welcome", "add_owner", "remove_owner"]},
-        "key": {"type": "string", "enum": ["daily_ideas", "ideas_at", "ideas_channel", "brain_provider", "brain_model"]},
+        "key": {"type": "string", "enum": ["daily_ideas", "ideas_at", "ideas_channel", "brain_provider", "brain_model", "forge_minutes"]},
         "value": {"type": "string", "description": "for set: the new value; for add_owner/remove_owner: the user id or <@id> mention"}},
         "required": ["action"]},
 })
@@ -631,7 +637,17 @@ def install(manager, packages):
 PENDING_BUILDS = {}          # tool name -> time the forge was asked; one build per name at a time
 
 
-def request_tool(name, brief, inputs=None, secrets=None, example_call=None, ctx=None, mode="build", error=None):
+def forge_budget(minutes=None):
+    """Seconds for one build: what this call asked for, else the owner's forge_minutes setting, else FORGE_TIMEOUT.
+    The forge clamps it again on its side, so nothing here can talk past the ceiling the owner set."""
+    try:
+        m = float(minutes) if minutes not in (None, "") else float(settings_load().get("forge_minutes") or 0)
+    except (TypeError, ValueError):
+        m = 0
+    return int(m * 60) if m > 0 else FORGE_TIMEOUT
+
+
+def request_tool(name, brief, inputs=None, secrets=None, example_call=None, ctx=None, mode="build", error=None, minutes=None):
     """Hand a brief to the forge on the dev box (dev/forge.py): a headless Claude Code writes the tool, tests it with a
     harness that behaves like this bot, installs the pair into /data/tools and commits it.
 
@@ -666,7 +682,8 @@ def request_tool(name, brief, inputs=None, secrets=None, example_call=None, ctx=
            "secrets": [s for s in (secrets or []) if isinstance(s, str)],
            "example_call": example_call if isinstance(example_call, dict) else {},
            "requested_by": ctx.get("who", ""), "available_secrets": available, "mode": "build",
-           "guild_id": ctx.get("guild_id")}                  # so the forge's progress lines land in that server's #activity
+           "guild_id": ctx.get("guild_id"),                  # so the forge's progress lines land in that server's #activity
+           "budget_s": forge_budget(minutes)}                # how long the agent gets for this one build
     if mode == "repair":                                     # the agent gets the current code and the failure, and fixes rather than rewrites
         if not code_path(name).exists():
             raise ToolError(f"there is no tool named `{name}` to repair; use mode build")
@@ -678,8 +695,9 @@ def request_tool(name, brief, inputs=None, secrets=None, example_call=None, ctx=
     threading.Thread(target=_forge_worker, args=(name, job, ctx), daemon=True, name=f"forge-{name}").start()
     who = ctx.get("who") or "the person"
     verb = "repair" if mode == "repair" else "build"
+    mins = job["budget_s"] // 60
     if ctx.get("send"):
-        return (f"{verb} of `{name}` started in the background; it usually takes one to three minutes. Reply to {who} with one "
+        return (f"{verb} of `{name}` started in the background; it usually takes one to three minutes (up to {mins} here). Reply to {who} with one "
                 f"short line - \"working on it, a couple of minutes\" - not an explanation of what you lack, then end your turn. "
                 f"You will be woken with the result and {who}'s original message.")
     return (f"{verb} of `{name}` started in the background (one to three minutes). There is no channel to follow up in from "
@@ -688,12 +706,13 @@ def request_tool(name, brief, inputs=None, secrets=None, example_call=None, ctx=
 
 def _forge_worker(name, job, ctx):
     """Blocks on the forge for one build, then hands the result to the event loop for the follow-up turn."""
+    wait = int(job.get("budget_s") or FORGE_TIMEOUT) + 60      # the build's own budget plus a minute for install and commit
     try:
         r = httpx.post(f"{FORGE_URL}/forge", json=job, headers={"X-Internal-Token": os.environ["INTERNAL_TOKEN"]},
-                       timeout=FORGE_TIMEOUT)
+                       timeout=wait)
         out = r.json() if r.status_code == 200 else {"ok": False, "failure": f"the forge refused the request ({r.status_code}): {r.text[:300]}"}
     except httpx.TimeoutException:
-        out = {"ok": False, "failure": f"the forge did not answer within {FORGE_TIMEOUT}s; the tool may still land later"}
+        out = {"ok": False, "failure": f"the forge did not answer within {wait}s; the tool may still land later"}
     except Exception as e:  # noqa - anything else is reported to the model, never lost
         out = {"ok": False, "failure": f"could not talk to the forge: {type(e).__name__}: {str(e)[:200]}"}
     finally:
@@ -850,6 +869,7 @@ def settings_tool(action="get", key=None, value=None, ctx=None):
     if action == "get":
         provider, model = brain_settings()
         return {**ideas_settings(), "brain_provider": provider, "brain_model": model, "owners": sorted(owners()),
+                "forge_minutes": forge_budget() // 60,
                 "brains": {p: {"label": d["label"], "default_model": d["model"], "key": d["key"],
                                "key_present": bool(secret_env([d["key"]]).get(d["key"]))} for p, d in brain.PROVIDERS.items()},
                 "note": "daily_ideas true/false; ideas_at HH:MM local; ideas_channel name or id (empty = busiest); run_ideas posts now; "
@@ -893,8 +913,16 @@ def settings_tool(action="get", key=None, value=None, ctx=None):
         if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._:-]{1,80}", v):
             raise ToolError("brain_model is a model id like claude-opus-5, gpt-5 or deepseek-chat")
         s["brain_model"] = v
+    elif key == "forge_minutes":
+        try:
+            m = float(v)
+        except ValueError:
+            raise ToolError("forge_minutes is a number of minutes, e.g. 10; 0 restores the installed default")
+        if m and not 1 <= m <= 30:
+            raise ToolError("forge_minutes must be between 1 and 30 (0 restores the installed default); the forge enforces its own ceiling too")
+        s["forge_minutes"] = m or 0
     else:
-        raise ToolError("key must be daily_ideas, ideas_at, ideas_channel, brain_provider or brain_model")
+        raise ToolError("key must be daily_ideas, ideas_at, ideas_channel, brain_provider, brain_model or forge_minutes")
     settings_save(s)
     return {"ok": True, **ideas_settings(), "brain_provider": brain_settings()[0], "brain_model": brain_settings()[1]}
 
@@ -1319,7 +1347,8 @@ def dispatch(block, trusted, ctx=None):
             activity(f"🔧 **{'rewrote' if replaced else 'new tool'}** `{args.get('name')}` · for {who} · {str(args.get('description', ''))[:100]}", gid)
         elif name == "request_tool":
             result, note = request_tool(**args, ctx=ctx), f"forged `{args.get('name')}`"
-            activity(f"⚒️ **forge {'repairing' if args.get('mode') == 'repair' else 'building'}** `{args.get('name')}` · for {who} · {str(args.get('brief', ''))[:120]}", gid)
+            activity(f"⚒️ **forge {'repairing' if args.get('mode') == 'repair' else 'building'}** `{args.get('name')}`"
+                     f" · for {who} · up to {forge_budget(args.get('minutes')) // 60} min · {str(args.get('brief', ''))[:110]}", gid)
         elif name == "read_tool":
             result, note = read_tool(**args), f"read `{args.get('name')}`"
         elif name == "delete_tool":

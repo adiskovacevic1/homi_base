@@ -40,6 +40,13 @@ discovery through the host helper) from
 install becomes its household's bot rather than a copy of someone else's. Re-run the installer any time to
 reconfigure.
 
+**How long a build may take.** The forge's default is `FORGE_TIMEOUT` (6 minutes). An owner can change it from chat
+(`settings forge_minutes 12`, 1-30, live, no restart), and the model asks for more or less per build through
+`request_tool`'s `minutes`: a small tool takes three, a device protocol with auth deserves fifteen. Every request is
+clamped on the forge's side to `FORGE_BUDGET_MIN`..`FORGE_BUDGET_MAX` (60s..1800s), so the ceiling belongs to whoever
+runs the machine, not to the model. The chosen budget appears in the `#activity` line and in the forge's log. The forge
+builds one tool at a time, so a long budget holds up the next request.
+
 ## Per-install extras: `docker-compose.override.yml`
 
 When a tool the bot built needs something from the host, most often a port published so Windows can reach a server

@@ -36,7 +36,9 @@ PORT = int(os.environ.get("FORGE_PORT", "8791"))
 WORK = Path(os.environ.get("FORGE_WORK", "/root/work"))
 BOTS = Path("/bots")
 LAB = Path("/lab")                                    # the repo root, when mounted; enables the git commit
-CLAUDE_TIMEOUT = int(os.environ.get("FORGE_TIMEOUT", "360"))
+CLAUDE_TIMEOUT = int(os.environ.get("FORGE_TIMEOUT", "360"))        # the default budget for one build
+BUDGET_MIN = int(os.environ.get("FORGE_BUDGET_MIN", "60"))          # a job may ask for more or less time, within these
+BUDGET_MAX = int(os.environ.get("FORGE_BUDGET_MAX", "1800"))        # the ceiling the bot cannot talk its way past
 MAX_TURNS = int(os.environ.get("FORGE_MAX_TURNS", "60"))
 KEEP_DAYS = int(os.environ.get("FORGE_KEEP_DAYS", "7"))
 TOOL_TIMEOUT = 30                                     # what the bot gives one call; the harness matches it
@@ -430,6 +432,16 @@ def cleanup():
             pass
 
 
+def clamp_budget(v):
+    """Seconds the agent gets for one build: what the job asked for, inside the forge's own floor and ceiling, else the
+    default. The bot chooses per build (a big job deserves longer); the ceiling is the owner's, not the model's."""
+    try:
+        n = int(v)
+    except (TypeError, ValueError):
+        return CLAUDE_TIMEOUT
+    return max(BUDGET_MIN, min(n, BUDGET_MAX))
+
+
 def build(job):
     """One build, start to finish, in a worker thread. Always returns a dict for the bot."""
     name, bot, kit = job["name"], job["bot"], job["kit"]
@@ -438,6 +450,7 @@ def build(job):
     work = WORK / f"{time.strftime('%Y%m%d-%H%M%S')}-{name}"
     work.mkdir(parents=True)
     started = time.time()
+    budget = clamp_budget(job.get("budget_s"))                   # this build's own time, asked for by the bot, clamped here
     (work / "harness.py").write_text(HARNESS, encoding="utf-8")
     (work / "BRIEF.json").write_text(json.dumps(job, indent=2), encoding="utf-8")
     repair = job.get("mode") == "repair" and job.get("existing_code")
@@ -449,7 +462,7 @@ def build(job):
                            example_call=json.dumps(job.get("example_call") or {}),
                            secrets=", ".join(job.get("secrets") or []) or ("as declared in the existing spec" if repair else "none"),
                            available_secrets=", ".join(job.get("available_secrets") or []) or "none",
-                           tools_dir=tools_dir, pylibs=pylibs, tool_timeout=TOOL_TIMEOUT, budget=max(2, CLAUDE_TIMEOUT // 60 - 1))
+                           tools_dir=tools_dir, pylibs=pylibs, tool_timeout=TOOL_TIMEOUT, budget=max(2, budget // 60 - 1))
     if repair:
         prompt = (f"## REPAIR, not a new build\n`{name}.py` and `{name}.json` in this directory are the tool as it is now, and it is broken. "
                   f"The failure the bot saw:\n```\n{job.get('error') or '(not recorded)'}\n```\nFix the tool. Keep its name, and keep its "
@@ -466,14 +479,14 @@ def build(job):
     # happen (the last line is the same result object the plain json format would have returned)
     argv = ["claude", "-p", prompt, "--output-format", "stream-json", "--verbose", "--max-turns", str(MAX_TURNS),
             "--allowedTools", *ALLOWED_TOOLS]
-    log(f"building `{name}` for {bot} in {work.name} (auth: {auth})")
+    log(f"building `{name}` for {bot} in {work.name} (auth: {auth}; budget {budget}s)")
     progress = Progress(name, job.get("guild_id"), job.get("mode", "build"))
     meta, rc, stderr_text = {}, None, ""
     try:
-        meta, rc, timed_out = run_streaming(argv, work, env, started + CLAUDE_TIMEOUT, progress)
+        meta, rc, timed_out = run_streaming(argv, work, env, started + budget, progress)
         stderr_text = (work / "claude-stderr.log").read_text(encoding="utf-8", errors="replace") if (work / "claude-stderr.log").exists() else ""
         if timed_out:
-            raise subprocess.TimeoutExpired(argv[0], CLAUDE_TIMEOUT)
+            raise subprocess.TimeoutExpired(argv[0], budget)
         if meta:
             out["cost_usd"] = round(float(meta.get("total_cost_usd") or 0), 3)
             out["turns"] = meta.get("num_turns")
@@ -485,7 +498,7 @@ def build(job):
                 out["failure"] += " - the dev box's Claude Code login is missing or expired; the owner has to run `docker compose exec dev claude` once and log in"
             return out
     except subprocess.TimeoutExpired:
-        out["failure"] = (f"the build ran longer than {CLAUDE_TIMEOUT}s and was stopped before it finished - the job is probably "
+        out["failure"] = (f"the build ran longer than {budget}s and was stopped before it finished - the job is probably "
                           "harder than it looks (hostile data source, no usable API); a narrower brief or a different source may work")
         return out
     finally:
@@ -553,7 +566,9 @@ async def main():
                "available_secrets": [s for s in job.get("available_secrets") or [] if isinstance(s, str)][:50],
                "mode": "repair" if job.get("mode") == "repair" else "build",
                "existing_code": str(job.get("existing_code") or "")[:60000], "error": str(job.get("error") or "")[:4000],
-               "existing_spec": job.get("existing_spec") if isinstance(job.get("existing_spec"), dict) else {}}
+               "existing_spec": job.get("existing_spec") if isinstance(job.get("existing_spec"), dict) else {},
+               "guild_id": job.get("guild_id"),
+               "budget_s": clamp_budget(job.get("budget_s"))}
         async with LOCK:
             try:
                 out = await asyncio.to_thread(build, job)
