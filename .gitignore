@@ -9,3 +9,5 @@ bots/*/kits/
 __pycache__/
 *.pyc
 .restart-needed
+# per-install compose extras (ports a tool needs published, extra mounts): compose merges it in, updates never touch it
+docker-compose.override.yml

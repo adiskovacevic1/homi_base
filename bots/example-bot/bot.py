@@ -225,6 +225,12 @@ Your machine - you are root in your own Debian container, and `shell` and `insta
   lost when the container is rebuilt; `install` is the one that survives).
 - Only /data survives a rebuild - it is the volume. Anything you write elsewhere is temporary, so keep
   files a tool needs in /data/<tool_name>/.
+- A tool that runs a server (a file share, a dashboard, a listener) dies with every restart of this container. To
+  have it back automatically, the tool adds its start call to /data/autostart.json, a JSON list of
+  {{"tool": "<name>", "args": {{...}}}}; those calls are re-run a few seconds after every start. Its port is not
+  reachable from the owner's PC until they publish it: tell them to add it to docker-compose.override.yml
+  (services: example-bot: ports: ["127.0.0.1:<port>:<port>"]) and run `docker compose up -d example-bot`. Bind to
+  the PC only unless the tool requires a password; the whole LAN can reach a published port otherwise.
 - You are on the household network and can reach the internet. Stay inside your own container unless
   asked; you have access to things outside it that you are not meant to touch on your own initiative.
 - Secrets (API keys, passwords) are handled for you: give create_tool a `secrets` list of environment-variable
@@ -1251,6 +1257,35 @@ def seed_starter_tools():
     print(f"first start: seeded {len(names)} starter tools - {', '.join(names)}", flush=True)
 
 
+AUTOSTART_FILE = Path("/data/autostart.json")   # [{"tool": name, "args": {...}}, ...]: tool calls re-run after every start
+
+
+def replay_autostart():
+    """Re-run the tool calls a tool registered for startup, each in its own thread: a tool that runs a server (a WebDAV
+    share, a dashboard) puts its start call here, and the server is back a few seconds after a restart or rebuild."""
+    try:
+        entries = json.loads(AUTOSTART_FILE.read_text(encoding="utf-8")) if AUTOSTART_FILE.exists() else []
+    except ValueError as e:
+        print(f"autostart: /data/autostart.json is not valid JSON ({e}); nothing started", flush=True)
+        return
+    entries = [e for e in entries if isinstance(e, dict) and isinstance(e.get("tool"), str)]
+    if not entries:
+        return
+
+    def one(e):
+        name, args = e["tool"], e.get("args") or {}
+        try:
+            run_tool(name, args if isinstance(args, dict) else {})
+            print(f"autostart: `{name}` {json.dumps(args)[:80]} ok", flush=True)
+            activity(f"🔁 **autostart** `{name}` · {json.dumps(args)[:80]}")
+        except Exception as ex:  # noqa - one failing entry must not stop the others or the bot
+            print(f"autostart: `{name}` failed: {str(ex).strip().splitlines()[-1][:200]}", flush=True)
+            activity(f"⚠️ **autostart failed** `{name}` · {str(ex).strip().splitlines()[-1][:140]}")
+    print(f"autostart: {len(entries)} call(s): {', '.join(e['tool'] for e in entries)}", flush=True)
+    for e in entries:
+        threading.Thread(target=one, args=(e,), daemon=True, name=f"autostart-{e['tool']}").start()
+
+
 def replay_apt():
     """Reinstall apt packages recorded by install() - the filesystem outside /data is new on every rebuild."""
     if not APT_MANIFEST.exists():
@@ -1981,6 +2016,7 @@ def main():
               "and install software in this container", flush=True)
     seed_starter_tools()
     replay_apt()
+    replay_autostart()
     broken = check_tools()
     if broken:
         print(f"kit check: {len(broken)} tool(s) do not import - {', '.join(broken)} (the daily review proposes repairs; --check-tools lists errors)", flush=True)

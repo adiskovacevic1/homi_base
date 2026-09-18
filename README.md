@@ -40,6 +40,22 @@ discovery through the host helper) from
 install becomes its household's bot rather than a copy of someone else's. Re-run the installer any time to
 reconfigure.
 
+## Per-install extras: `docker-compose.override.yml`
+
+When a tool the bot built needs something from the host, most often a port published so Windows can reach a server
+the tool runs (a WebDAV share, a dashboard), put it in `docker-compose.override.yml` next to `docker-compose.yml`.
+Compose merges it automatically, it is git-ignored, and `update.ps1` never touches it:
+
+```yaml
+services:
+  example-bot:
+    ports:
+      - "127.0.0.1:8780:8780"   # this PC only; use "8780:8780" for the whole LAN, and then have the tool require a password
+```
+
+A tool that runs a server registers itself in `/data/autostart.json` (`[{"tool": "nas_share", "args": {"action": "start"}}]`)
+and the bot re-runs those calls after every restart, so the server is back a few seconds after `docker compose up`.
+
 ## Two bots on one PC
 
 Each bot is its own install folder (clone the repo twice), with its own Discord bot, vault and kit; the containers are
