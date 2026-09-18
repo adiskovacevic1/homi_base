@@ -1538,6 +1538,33 @@ def check_tools():
 
 # ---------------------------------------------------------------- talking to Claude
 
+ACTION_RE = re.compile(
+    r"\b(turn|switch|toggle|power|flip)\s+(on|off|up|down)\b|\b(turn|switch|power)\s+(the|my|a|all)?\s*\w+\s+(on|off)\b"
+    r"|\bset\b.*\b(to|at)\b|\bplay\b|\bpause\b|\bstop\b|\bresume\b|\bskip\b|\bmute\b|\bunmute\b|\bvolume\b"
+    r"|\bwake\b|\breboot\b|\brestart\b|\bshut\s*down\b|\block\b|\bunlock\b|\bopen\b|\bclose\b|\bdim\b|\bbrighten\b"
+    r"|\bcast\b|\blaunch\b|\bsend\b|\bstart\b", re.I)
+
+
+def looks_like_an_action(text):
+    """Did the person ask for something to happen, rather than for information? Used to catch an answer that claims an
+    action nothing actually performed."""
+    return bool(ACTION_RE.search(str(text or "")[:400]))
+
+
+def last_user_text(messages):
+    for m in reversed(messages):
+        if m.get("role") != "user":
+            continue
+        c = m.get("content")
+        if isinstance(c, str):
+            return c
+        if isinstance(c, list):
+            parts = [b.get("text", "") for b in c if isinstance(b, dict) and b.get("type") == "text"]
+            if parts:
+                return " ".join(parts)
+    return ""
+
+
 def used_in_history(messages, look_back=12):
     """Tool names this conversation has already called, from the stored assistant turns (blocks or provider objects)."""
     names = set()
@@ -1562,6 +1589,8 @@ def ask(history, trusted=True, system_extra="", ctx=None):
     messages = [dict(m) for m in history]
     notes, nag = [], None
     unlocked = used_in_history(messages)        # tools this conversation already touched stay attached, no second lookup
+    acted = False                               # did any tool actually run this turn?
+    nudged = False                              # the "you claimed an action you did not take" correction, at most once
     for _ in range(MAX_STEPS):
         specs, kit_guide = active_specs(unlocked)
         try:
@@ -1575,6 +1604,17 @@ def ask(history, trusted=True, system_extra="", ctx=None):
             return "I can't help with that one.", notes
         if turn.stop != "tool_use":
             text = turn.text or "…"
+            # An answer to "turn the lights on" that called nothing is a claim, not an action. Say so once and let it
+            # try again; a voice turn is the usual offender, where brevity pressure makes the model skip the tool.
+            if not acted and not nudged and looks_like_an_action(last_user_text(messages)):
+                nudged = True
+                messages.append(brain.assistant_message(turn))
+                messages.append({"role": "user", "content":
+                                 "[Automatic check, not a person speaking.] That was a request to make something happen, and you "
+                                 "answered without calling a single tool, so nothing was done. Never report a device or service as "
+                                 "changed unless a tool call in this turn did it. Now either do it - find_tool if you need the right "
+                                 "one, then call it and report what it returned - or say plainly that you could not, and why."})
+                continue
             return (f"{nag}\n\n{text}" if nag else text), notes
         messages.append(brain.assistant_message(turn))      # Claude: verbatim, thinking blocks and all; others: the same as blocks
         results = []
@@ -1588,6 +1628,7 @@ def ask(history, trusted=True, system_extra="", ctx=None):
             results.append(result)
             notes.append(note)
             unlocked.add(call["name"])          # a tool used once stays in play for the rest of the turn
+            acted = acted or not result.get("is_error")
         messages.append(brain.tool_results_message(results))   # all results in one message
     return "I kept reaching for tools and ran out of steps — try narrowing the question.", notes
 
@@ -1893,7 +1934,9 @@ def run_discord(token):
             return
         VOICE_EXTRA = ("\n\nVOICE MODE: your reply will be read aloud by text-to-speech in a voice channel. Answer in one to "
                        "three short spoken sentences, plain words, no markdown, no lists, no URLs, no emoji; spell out numbers "
-                       "under ten. Do the work with tools as usual, just keep the spoken summary short.")
+                       "under ten. Brevity applies to the words you say, never to the work: if the person asked for something to "
+                       "happen, call the tool that does it (find_tool first if you need to) and report what it returned. Never say "
+                       "a light, a plug, a TV or anything else was changed unless a tool call in this turn changed it.")
 
         async def handle_ask(req):
             if req.headers.get("X-Internal-Token") != token:
