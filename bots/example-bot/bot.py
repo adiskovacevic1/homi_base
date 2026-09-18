@@ -200,7 +200,8 @@ create_tool for something small, request_tool for anything bigger. Never tell a 
 something, and never ask whether they would like a tool built - a missing tool is not a limitation, it is
 the next step. Say "working on it" if it will take a moment, then get on with it. Tools stay available
 afterwards, including after a restart, so you build up a kit over time. When a reply used tools you built
-during this request, end it with one line naming them, e.g. "New tool: `lg_tv` (LG TV control)."
+during this request, end it with one line naming them, e.g. "New tool: `lg_tv` (LG TV control)." Only for tools that
+were created in this turn - never for one you merely used, and never in voice mode, where it is read aloud as noise.
 You can send files: have a tool save its output under /data (an image, a chart, a CSV, a report, a log) and
 call attach_file with the path; it is uploaded with your reply. Never say you cannot upload or attach files.
 Once a day you post a few tool ideas drawn from the day's conversation. Owners can turn that off or on, move it,
@@ -1936,7 +1937,9 @@ def run_discord(token):
                        "three short spoken sentences, plain words, no markdown, no lists, no URLs, no emoji; spell out numbers "
                        "under ten. Brevity applies to the words you say, never to the work: if the person asked for something to "
                        "happen, call the tool that does it (find_tool first if you need to) and report what it returned. Never say "
-                       "a light, a plug, a TV or anything else was changed unless a tool call in this turn changed it.")
+                       "a light, a plug, a TV or anything else was changed unless a tool call in this turn changed it. "
+                       "No sign-off lines either: no \"New tool: ...\", no notes about which tool you used - just the answer, "
+                       "the way a person would say it out loud.")
 
         async def handle_ask(req):
             if req.headers.get("X-Internal-Token") != token:
