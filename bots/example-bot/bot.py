@@ -73,7 +73,9 @@ if TALK_TO not in ("owners", "anyone"):
 DM_POLICY = os.environ.get("DM_POLICY", "owners").strip().lower()        # owners (default) | anyone | off
 if DM_POLICY not in ("owners", "anyone", "off"):
     DM_POLICY = "owners"
-MAX_TOOLS = 60              # tools the model may keep at once (every spec is sent on every turn)
+MAX_TOOLS = int(os.environ.get("MAX_TOOLS", "200"))     # tools the model may keep at once
+TOOL_INDEX_OVER = int(os.environ.get("TOOL_INDEX_OVER", "12"))   # past this many kit tools, send a one-line index and full
+#                                                                  specs only for what is in play; find_tool fetches the rest
 MAX_TOOL_OUTPUT = 4000      # characters of a tool result fed back to the model
 MAX_STEPS = 16              # tool rounds per message, before it has to answer with what it has
 NAME_RE = re.compile(r"^[a-z][a-z0-9_]{2,47}$")
@@ -213,7 +215,8 @@ Writing one:
 - Module-level code runs on every call, so keep it to imports and constants; do the work inside run().
 - Each call runs in its own process, limited to {TOOL_TIMEOUT}s, with no access to this conversation.
 - Raise an exception with a clear message on bad input; you will see it and can fix the tool.
-- Prefer an existing tool to a near-duplicate. Tools break (an API changes, a device moves): when one fails in a
+- Prefer an existing tool to a near-duplicate; when the toolkit index is in your instructions, `find_tool` is how you
+  check what you already have before building anything. Tools break (an API changes, a device moves): when one fails in a
   way that is not the caller's fault, fix it rather than working around it - read_tool and create_tool the same
   name for a small fix, or request_tool with mode "repair" and the error for anything involved. A tool that has
   failed the same way three times is broken, not misused; repair it before trying again. Keep the kit working.
@@ -363,6 +366,15 @@ META_TOOLS.append({
         "note": {"type": "string", "description": "optional caption, shown with the file"}},
         "required": ["path"]},
 })
+FIND_TOOL_SPEC = {          # offered only when the kit is too big to attach in full (see active_specs)
+    "name": "find_tool",
+    "description": "Look up tools you own by a few words and get their full schemas, so you can call them. Use it the moment a "
+                   "request touches something in the toolkit index that is not attached in full: 'tv volume', 'spotify', "
+                   "'wake the desktop'. Cheap; prefer it to guessing, to asking the person, or to building a duplicate.",
+    "input_schema": {"type": "object", "properties": {
+        "query": {"type": "string", "description": "a few words describing what you need to do, or a tool name you saw in the index"}},
+        "required": ["query"]},
+}
 META_TOOLS.append({
     "name": "settings",
     "description": "Owner-only switches for the bot itself. action 'get' shows them; 'set' changes one: daily_ideas (true/false - the "
@@ -468,6 +480,92 @@ def tool_specs():
         spec.pop("secrets_any", None)
         specs.append(spec)
     return specs
+
+
+def kit_specs():
+    """Just the household's own tools, without the meta-tools."""
+    return tool_specs()[len(META_TOOLS):]
+
+
+def first_line(spec, n=110):
+    return (spec.get("description") or "").splitlines()[0][:n]
+
+
+def tool_index(specs):
+    """One line per tool, for the system prompt: what exists, without the schemas."""
+    return "\n".join(f"- {s['name']}: {first_line(s)}" for s in specs)
+
+
+STOP_WORDS = {"the", "a", "an", "and", "or", "of", "to", "in", "on", "at", "for", "with", "my", "our", "your", "is", "are", "was",
+              "be", "as", "we", "so", "if", "no", "not", "am", "im", "ive", "all", "just", "very", "too", "also",
+              "it", "its", "this", "that", "please", "can", "you", "i", "me", "do", "does", "get", "got", "what", "whats", "which",
+              "how", "when", "where", "who", "up", "down", "off", "out", "from", "by", "about", "into", "some", "any", "one",
+              "tool", "tools", "use", "using", "make", "show", "tell", "give", "need", "want", "would", "could", "should", "now"}
+
+
+def words_of(text):
+    # two-letter words count: "tv", "ai", "pc" are exactly the words people search a toolkit with
+    return {w for w in re.split(r"[^a-z0-9]+", str(text or "").lower()) if len(w) > 1 and w not in STOP_WORDS}
+
+
+def match_tools(query, specs, limit=6):
+    """Rank tools against a few words. Whole words only, stop-words dropped, plurals folded: substring matching on
+    descriptions made 'the' in 'weather' a hit, which put the weather tool top of every query."""
+    def stem(w):
+        return w[:-1] if len(w) > 4 and w.endswith("s") and not w.endswith("ss") else w
+    wanted = {stem(w) for w in words_of(query)}
+    if not wanted:
+        return []
+    scored = []
+    for s in specs:
+        name_parts = {stem(p) for p in re.split(r"[^a-z0-9]+", s["name"].lower()) if p}
+        desc_words = {stem(w) for w in words_of(s.get("description"))}
+        score = 0.0
+        for w in wanted:
+            if w in name_parts:
+                score += 6
+            elif any(w in p or p in w for p in name_parts if len(p) > 3):
+                score += 3
+            if w in desc_words:
+                score += 2
+        if score:
+            scored.append((score, s))
+    scored.sort(key=lambda t: (-t[0], t[1]["name"]))
+    return [s for _, s in scored[:limit]]
+
+
+def find_tool(query, unlock=None):
+    """The model's lookup into its own kit: full schemas for the best matches, which it may then call directly.
+    `unlock` is the set ask() keeps for this conversation turn, so a found tool stays callable for the rest of it."""
+    specs = kit_specs()
+    hits = match_tools(query, specs)
+    if unlock is not None:
+        unlock.update(s["name"] for s in hits)
+    if not hits:
+        return {"query": query, "found": 0, "note": "nothing matched. The index in your instructions lists everything you have; "
+                                                    "if none of it fits, write the tool (create_tool) or have it built (request_tool).",
+                "all_tools": [s["name"] for s in specs]}
+    return {"query": query, "found": len(hits),
+            "tools": [{"name": s["name"], "description": s.get("description", ""), "input_schema": s.get("input_schema", {})} for s in hits],
+            "note": "these are now callable directly, this turn; call the one you want with its arguments"}
+
+
+def active_specs(unlocked=()):
+    """What the model is handed this turn: the meta-tools always, plus the kit. Small kit -> all of it, as before.
+    Large kit -> only the tools in play (found this turn, or used earlier in this conversation); the rest is a one-line
+    index in the system prompt, and find_tool brings back a full schema on demand. 40 tools cost ~18k tokens a turn
+    when they all go; this keeps a turn near 2k however big the kit grows."""
+    specs = kit_specs()
+    if len(specs) <= TOOL_INDEX_OVER:
+        return list(META_TOOLS) + specs, ""
+    keep = {n for n in unlocked}
+    chosen = [s for s in specs if s["name"] in keep]
+    rest = [s for s in specs if s["name"] not in keep]
+    guide = ("\n\nYOUR TOOLKIT\nYou have more tools than fit in one message, so only the ones already in play are attached in full. "
+             "Everything you own is listed below, one line each. When you want one that is not attached, call `find_tool` with a "
+             "few words (\"living room TV volume\") - it returns the full schemas and they become callable in this same turn. "
+             "Never invent a tool name, and never rebuild something this list already covers.\n" + tool_index(rest))
+    return list(META_TOOLS) + [FIND_TOOL_SPEC] + chosen, guide
 
 
 def tool_secrets(name, key="secrets"):
@@ -1440,6 +1538,22 @@ def check_tools():
 
 # ---------------------------------------------------------------- talking to Claude
 
+def used_in_history(messages, look_back=12):
+    """Tool names this conversation has already called, from the stored assistant turns (blocks or provider objects)."""
+    names = set()
+    for m in messages[-look_back:]:
+        content = m.get("content")
+        if m.get("role") != "assistant" or isinstance(content, str):
+            continue
+        for b in content or []:
+            t = getattr(b, "type", None) or (b.get("type") if isinstance(b, dict) else None)
+            if t == "tool_use":
+                n = getattr(b, "name", None) or (b.get("name") if isinstance(b, dict) else None)
+                if n:
+                    names.add(n)
+    return names
+
+
 def ask(history, trusted=True, system_extra="", ctx=None):
     """Claude, plus as many tool rounds as the answer needs. Returns (reply, notes).
     Opus 5 thinks adaptively by default; medium effort keeps chat replies quick and cheap.
@@ -1447,9 +1561,11 @@ def ask(history, trusted=True, system_extra="", ctx=None):
     import types
     messages = [dict(m) for m in history]
     notes, nag = [], None
+    unlocked = used_in_history(messages)        # tools this conversation already touched stay attached, no second lookup
     for _ in range(MAX_STEPS):
+        specs, kit_guide = active_specs(unlocked)
         try:
-            turn = brain_complete(SYSTEM + TOOL_GUIDE + system_extra, messages, tool_specs(), "medium")
+            turn = brain_complete(SYSTEM + TOOL_GUIDE + kit_guide + system_extra, messages, specs, "medium")
         except brain.KeyMissing as e:                        # the brain's own key: no model to phrase it, so the bot says it itself
             return key_needed([e.key], f"the brain is set to {brain.PROVIDERS[e.provider]['label']} and that key is not in the vault"), notes
         except brain.KeyRejected as e:
@@ -1463,9 +1579,15 @@ def ask(history, trusted=True, system_extra="", ctx=None):
         messages.append(brain.assistant_message(turn))      # Claude: verbatim, thinking blocks and all; others: the same as blocks
         results = []
         for call in turn.tool_calls:
+            if call["name"] == "find_tool":     # answered here, not in dispatch: it also decides what is attached next round
+                found = find_tool(str((call.get("input") or {}).get("query", "")), unlocked)
+                results.append({"type": "tool_result", "tool_use_id": call["id"], "content": clip(json.dumps(found))})
+                notes.append(f"looked up {found['found']} tool(s)")
+                continue
             result, note = dispatch(types.SimpleNamespace(**call), trusted, ctx)
             results.append(result)
             notes.append(note)
+            unlocked.add(call["name"])          # a tool used once stays in play for the rest of the turn
         messages.append(brain.tool_results_message(results))   # all results in one message
     return "I kept reaching for tools and ran out of steps — try narrowing the question.", notes
 
